@@ -22,7 +22,7 @@ plt.rcParams['figure.dpi'] = 150
 
 def format_time_diff(minutes):
     """Formats a duration in minutes into a clean, readable string (e.g., '3d 4h', '1h 15m')."""
-    if pd.isna(minutes) or minutes == 0:
+    if pd.isna(minutes) or minutes <= 0:
         return '-'
     days = int(minutes // 1440)
     hours = int((minutes % 1440) // 60)
