@@ -6,6 +6,7 @@ from datetime import datetime
 import numpy as np
 import os
 import pytz
+import matplotlib.patheffects as pe
 
 # --- Configuration ---
 MEMBERS_CSV = 'Umamusume Pretty Derby_ Cash Crew Fans - members.csv'
@@ -83,7 +84,7 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, last_upd
 
         for _, member_row in all_members.iterrows():
             member_name = member_row['inGameName']
-            rank = member_row['rank'] if member_row['rank'] <= 10 else None
+            rank = member_row['rank']
             member_data = individual_log_df[individual_log_df['inGameName'] == member_name]
             if not member_data.empty:
                 safe_member_name = member_name.replace(' ', '_').replace('/', '').replace('\\', '')
@@ -96,8 +97,8 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, last_upd
         generate_club_pacing_chart(individual_log_df, last_updated_str, generated_str)
 
     # Member Cumulative Gain Chart
-    if not individual_log_df.empty:
-        generate_member_area_chart(individual_log_df, last_updated_str, generated_str)
+    if not individual_log_df.empty and not summary_df.empty:
+        generate_member_area_chart(individual_log_df, summary_df, last_updated_str, generated_str)
 
 
 def generate_club_pacing_chart(analysis_df, last_updated_str, generated_str):
@@ -146,32 +147,71 @@ def generate_club_pacing_chart(analysis_df, last_updated_str, generated_str):
     print("  - Saved club_pacing_chart.png")
 
 
-def generate_member_area_chart(analysis_df, last_updated_str, generated_str):
-    """Generates the new stacked area chart for cumulative gain by member."""
-    print("  - Generating member cumulative gain chart...")
+def generate_member_area_chart(analysis_df, summary_df, last_updated_str, generated_str):
+    """Generates the new stacked area chart with 6-hour intervals and percentage annotations."""
+    print("  - Generating member cumulative gain chart by rank group...")
     
-    pivot_df = analysis_df.pivot_table(index='timestamp', columns='inGameName', values='fanGain', aggfunc='sum').fillna(0)
-    cumulative_df = pivot_df.cumsum()
+    summary_df = summary_df.sort_values('totalMonthlyGain', ascending=False).copy()
+    summary_df['rank'] = range(1, len(summary_df) + 1)
+    
+    ranked_analysis_df = pd.merge(analysis_df, summary_df[['inGameName', 'rank']], on='inGameName')
+    
+    ranked_analysis_df['time_group'] = ranked_analysis_df['timestamp'].dt.floor('6H')
 
-    daily_cumulative_df = cumulative_df.resample('D').max().fillna(method='ffill')
+    bins = [0, 5, 10, 15, 20, 25, 30]
+    labels = ['Ranks 1-5', 'Ranks 6-10', 'Ranks 11-15', 'Ranks 16-20', 'Ranks 21-25', 'Ranks 26-30']
+    ranked_analysis_df['Rank Group'] = pd.cut(ranked_analysis_df['rank'], bins=bins, labels=labels, right=True)
 
-    if daily_cumulative_df.empty:
+    # --- Corrected Logic ---
+    # 1. Pivot the raw fanGain data (NOT cumulative)
+    pivot_df = ranked_analysis_df.pivot_table(index='time_group', columns='Rank Group', values='fanGain', aggfunc='sum').fillna(0)
+    
+    # 2. Create the cumulative DataFrame for calculations, but don't plot it directly.
+    cumulative_df = pivot_df.cumsum(axis=1)
+    
+    if pivot_df.empty:
         print("    - Skipping member area chart: No data to plot.")
         return
+        
+    total_per_interval = cumulative_df.sum(axis=1)
+    percentage_df = cumulative_df.divide(total_per_interval, axis=0) * 100
 
-    fig, ax = plt.subplots(figsize=(14, 8))
-    daily_cumulative_df.plot.area(ax=ax, stacked=True, colormap='viridis', linewidth=0.5)
+    fig, ax = plt.subplots(figsize=(16, 10))
+    colors = plt.cm.get_cmap('tab10', len(pivot_df.columns))
     
-    plt.title('Cumulative Fan Gain by Member Over Time', fontsize=16, weight='bold')
+    # 3. Plot the non-cumulative data and let the plot function handle stacking
+    pivot_df.plot.area(ax=ax, stacked=True, color=colors.colors, linewidth=0.5, legend=False)
+    
+    # 4. Use the cumulative data to correctly position annotations
+    y_previous = np.zeros(len(cumulative_df.index))
+    for i, col in enumerate(cumulative_df.columns):
+        y_values = cumulative_df[col].values
+        # Calculate the center of the current stacked area
+        y_centers = y_previous + (y_values - y_previous) / 2
+        percentages = percentage_df[col].values - percentage_df.shift(1, axis=1).fillna(0)[col].values
+
+        for j, (x, y, p) in enumerate(zip(cumulative_df.index, y_centers, percentages)):
+             if p > 1:
+                ax.text(x, y, f'{p:.0f}%', ha='center', va='center',
+        fontsize=18,  # <-- ADJUST THIS VALUE
+        color='white',
+        weight='bold',
+        path_effects=[pe.withStroke(linewidth=4, foreground='black')])
+        
+        y_previous = y_values
+
+    plt.title('Cumulative Fan Gain by Member Rank Group (6-Hour Intervals)', fontsize=16, weight='bold')
     plt.xlabel('Date', fontsize=12)
     plt.ylabel('Cumulative Fans Gained', fontsize=12)
     plt.grid(True, which='both', linestyle='--', linewidth=0.5)
     
     ax.yaxis.set_major_formatter(lambda x, pos: f'{x/1000000:.1f}M')
     
-    plt.legend(title='Members', bbox_to_anchor=(1.02, 1), loc='upper left')
+    # Manually create legend from colors and labels
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(handles, pivot_df.columns, title='Rank Groups', bbox_to_anchor=(1.02, 1), loc='upper left')
     
-    plt.tight_layout(rect=[0, 0.03, 0.85, 0.95])
+    plt.tight_layout(rect=[0, 0.03, 0.88, 0.95])
     add_timestamps_to_fig(fig, last_updated_str, generated_str)
     plt.savefig(os.path.join(OUTPUT_DIR, 'member_cumulative_gain.png'))
     plt.close(fig)
@@ -228,8 +268,8 @@ def generate_log_image(log_data, title, filename, last_updated_str, generated_st
 
         y_pos -= (1 / (limit + 5))
 
-    footer_text = "PACING columns show total fan gain in the trailing time period." if is_club_log else "PACING columns show projected gain based on long-term performance."
-    fig.text(0.5, 0.05, footer_text, color='white', fontsize=9, style='italic', weight='bold', va='bottom', ha='center')
+    footer_text_main = "PACING columns show total fan gain in the trailing time period." if is_club_log else "PACING columns show projected gain based on long-term performance."
+    fig.text(0.5, 0.05, footer_text_main, color='white', fontsize=9, style='italic', weight='bold', va='bottom', ha='center')
     add_timestamps_to_fig(fig, last_updated_str, generated_str)
     
     ax.axis('off')
@@ -256,15 +296,10 @@ def main():
     # --- Timestamp Generation ---
     central_tz = pytz.timezone('US/Central')
     
-    # Correctly handle "Last Updated" time
     last_updated_naive = fanlog_df['timestamp'].max()
     last_updated_ct = central_tz.localize(last_updated_naive)
     
-    # Correctly handle "Generated" time
     generation_ct = datetime.now(central_tz)
-    
-    last_updated_str = last_updated_ct.strftime('%Y-%m-%d %I:%M %p %Z')
-    generated_str = generation_ct.strftime('%Y-%m-%d %I:%M %p %Z')
     
     last_updated_str = last_updated_ct.strftime('%Y-%m-%d %I:%M %p %Z')
     generated_str = generation_ct.strftime('%Y-%m-%d %I:%M %p %Z')
