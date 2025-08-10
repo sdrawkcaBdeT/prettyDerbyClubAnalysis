@@ -67,7 +67,16 @@ def generate_visualizations(summary_df, analysis_df):
 
     # Club and Individual Logs
     if not analysis_df.empty:
-        generate_log_image(analysis_df, 'Club Update Log', 'club_update_log.png', limit=25, is_club_log=True)
+        # For the club log, we still need historical sums, so we create them here.
+        club_log_df = analysis_df.set_index('timestamp')
+        club_log_df['gainLast12h'] = club_log_df.groupby('inGameName')['fanGain'].rolling('12H').sum().values
+        club_log_df['gainLast24h'] = club_log_df.groupby('inGameName')['fanGain'].rolling('24H').sum().values
+        club_log_df['gainLast3d'] = club_log_df.groupby('inGameName')['fanGain'].rolling('3D').sum().values
+        club_log_df['gainLast7d'] = club_log_df.groupby('inGameName')['fanGain'].rolling('7D').sum().values
+        club_log_df['gainLast30d'] = club_log_df.groupby('inGameName')['fanGain'].rolling('30D').sum().values
+        club_log_df = club_log_df.reset_index()
+
+        generate_log_image(club_log_df, 'Club Update Log', 'club_update_log.png', limit=25, is_club_log=True)
         print("  - Saved club_update_log.png")
 
         all_members = summary_df.copy().sort_values('totalMonthlyGain', ascending=False)
@@ -174,6 +183,7 @@ def generate_member_area_chart(analysis_df):
 
 def generate_log_image(data, title, filename, limit=25, is_club_log=False, rank=None):
     """Generates and saves a CML-style log as an image."""
+    log_data = data.sort_values('timestamp', ascending=False).head(limit)
     if is_club_log:
         log_data = data.groupby('timestamp').agg({
             'fanGain': 'sum', 'gainLast12h': 'sum', 'gainLast24h': 'sum',
@@ -181,9 +191,7 @@ def generate_log_image(data, title, filename, limit=25, is_club_log=False, rank=
         }).reset_index()
         log_data = log_data.sort_values('timestamp', ascending=False).head(limit)
         log_data['timeDiffMinutes'] = -log_data['timestamp'].diff(periods=-1).dt.total_seconds() / 60
-    else:
-        log_data = data.sort_values('timestamp', ascending=False).head(limit)
-
+    
     if log_data.empty: return
 
     fig, ax = plt.subplots(figsize=(12, 8))
@@ -195,7 +203,7 @@ def generate_log_image(data, title, filename, limit=25, is_club_log=False, rank=
 
     ax.set_title(title, color='white', fontsize=16, weight='bold', loc='left', pad=20)
     
-    headers = ['Timestamp', 'Time Since', 'Fan Gain', '12h', '24h', '3d', '7d', '30d']
+    headers = ['Timestamp', 'Time Since', 'Fan Gain', '12h', '24h', '3d', '7d', 'Month-End'] if not is_club_log else ['Timestamp', 'Time Since', 'Fan Gain', '12h', '24h', '3d', '7d', '30d']
     header_positions = [0.01, 0.28, 0.45, 0.58, 0.68, 0.78, 0.88, 0.98]
     for i, header in enumerate(headers):
         ax.text(header_positions[i], 0.97, header, color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top', ha='left' if i < 2 else 'center')
@@ -214,8 +222,11 @@ def generate_log_image(data, title, filename, limit=25, is_club_log=False, rank=
         gain_str = f"+{int(gain_val):,}" if gain_val > 0 else str(int(gain_val))
         gain_color = '#4CAF50' if gain_val > 0 else '#BDBDBD'
         
-        pacing_values = [row['gainLast12h'], row['gainLast24h'], row['gainLast3d'], row['gainLast7d'], row['gainLast30d']]
-        
+        if is_club_log:
+             pacing_values = [row['gainLast12h'], row['gainLast24h'], row['gainLast3d'], row['gainLast7d'], row['gainLast30d']]
+        else:
+            pacing_values = [row['proj12h'], row['proj24h'], row['proj3d'], row['proj7d'], row['projMonthEnd']]
+
         ax.text(header_positions[0], y_pos, timestamp_str, color='#E0E0E0', fontsize=12, transform=ax.transAxes, va='top')
         ax.text(header_positions[1], y_pos, time_diff_str, color=time_diff_color, fontsize=11, transform=ax.transAxes, va='top', ha='left')
         ax.text(header_positions[2], y_pos, gain_str, color=gain_color, fontsize=12, weight='bold', transform=ax.transAxes, ha='center', va='top')
@@ -226,7 +237,7 @@ def generate_log_image(data, title, filename, limit=25, is_club_log=False, rank=
 
         y_pos -= (1 / (limit + 5))
 
-    footer_text = "PACING columns (12h, 24h, 3d, 7d, 30d) show the total fan gain in the trailing time period from the timestamp."
+    footer_text = "PACING columns show projected gain based on long-term performance." if not is_club_log else "PACING columns (12h, 24h, 3d, 7d, 30d) show the total fan gain in the trailing time period from the timestamp."
     fig.text(0.01, 0.01, footer_text, color='white', fontsize=9, style='italic', weight='bold', va='bottom')
 
     ax.axis('off')
@@ -254,36 +265,42 @@ def main():
     
     fanlog_df = fanlog_df.sort_values(by=['inGameName', 'timestamp'])
 
+    # --- Standard Fan Gain Calculation (between consecutive updates) ---
     fanlog_df['previousFanCount'] = fanlog_df.groupby('inGameName')['fanCount'].shift(1)
     fanlog_df['previousTimestamp'] = fanlog_df.groupby('inGameName')['timestamp'].shift(1)
-    
     fanlog_df['is_first_entry'] = fanlog_df['previousTimestamp'].isnull()
-
     fanlog_df['fanGain'] = fanlog_df['fanCount'] - fanlog_df['previousFanCount']
     fanlog_df.loc[fanlog_df['is_first_entry'], 'fanGain'] = 0
-
     time_diff = (fanlog_df['timestamp'] - fanlog_df['previousTimestamp']).dt.total_seconds()
     fanlog_df['timeDiffMinutes'] = (time_diff / 60).fillna(0)
-    fanlog_df['fansPerMinute'] = (fanlog_df['fanGain'] / fanlog_df['timeDiffMinutes']).where(fanlog_df['timeDiffMinutes'] > 0, 0)
-    
-    pacing_df = fanlog_df.set_index('timestamp')
-    pacing_df['gainLast12h'] = pacing_df.groupby('inGameName')['fanGain'].rolling('12H').sum().values
-    pacing_df['gainLast24h'] = pacing_df.groupby('inGameName')['fanGain'].rolling('24H').sum().values
-    pacing_df['gainLast3d'] = pacing_df.groupby('inGameName')['fanGain'].rolling('3D').sum().values
-    pacing_df['gainLast7d'] = pacing_df.groupby('inGameName')['fanGain'].rolling('7D').sum().values
-    pacing_df['gainLast30d'] = pacing_df.groupby('inGameName')['fanGain'].rolling('30D').sum().values
-    pacing_df = pacing_df.reset_index()
 
-    fan_gain_analysis_df = pacing_df[[
-        'timestamp', 'memberID', 'inGameName', 'fanCount', 'fanGain', 'timeDiffMinutes', 
-        'fansPerMinute', 'gainLast12h', 'gainLast24h', 'gainLast3d', 'gainLast7d', 'gainLast30d', 'is_first_entry'
-    ]].copy()
-    
-    csv_output_df = fan_gain_analysis_df.drop(columns=['is_first_entry']).copy()
-    for col in ['fanGain', 'timeDiffMinutes', 'fansPerMinute', 'gainLast12h', 'gainLast24h', 'gainLast3d', 'gainLast7d', 'gainLast30d']:
-        csv_output_df[col] = csv_output_df[col].round().astype(int)
+    # --- New Projection-Based Pacing Calculation ---
+    # Get the first record for each member
+    fanlog_df['firstTimestamp'] = fanlog_df.groupby('inGameName')['timestamp'].transform('first')
+    fanlog_df['firstFanCount'] = fanlog_df.groupby('inGameName')['fanCount'].transform('first')
 
-    print("  - Fan gain analysis complete.")
+    # Calculate total time elapsed and gain from the very first entry
+    total_time_diff = (fanlog_df['timestamp'] - fanlog_df['firstTimestamp']).dt.total_seconds()
+    total_time_minutes = total_time_diff / 60
+    total_fan_gain = fanlog_df['fanCount'] - fanlog_df['firstFanCount']
+
+    # Calculate the long-term fans per minute rate
+    fanlog_df['longTermFansPerMinute'] = (total_fan_gain / total_time_minutes).where(total_time_minutes > 0, 0)
+
+    # Calculate future projections based on this rate
+    fanlog_df['proj12h'] = fanlog_df['longTermFansPerMinute'] * 12 * 60
+    fanlog_df['proj24h'] = fanlog_df['longTermFansPerMinute'] * 24 * 60
+    fanlog_df['proj3d'] = fanlog_df['longTermFansPerMinute'] * 3 * 24 * 60
+    fanlog_df['proj7d'] = fanlog_df['longTermFansPerMinute'] * 7 * 24 * 60
+    
+    # Calculate projection to the end of the month
+    end_of_month_ts = fanlog_df['timestamp'].dt.to_period('M').dt.end_time
+    minutes_to_eom = (end_of_month_ts - fanlog_df['timestamp']).dt.total_seconds() / 60
+    fanlog_df['projMonthEnd'] = (fanlog_df['longTermFansPerMinute'] * minutes_to_eom).where(minutes_to_eom > 0, 0)
+    
+    print("  - Fan gain and projection analysis complete.")
+
+    fan_gain_analysis_df = fanlog_df.copy()
 
     report_date = pd.to_datetime(datetime.now())
     active_members_df = members_df[members_df['status'].isin(['Active', 'Pending'])].copy()
@@ -306,8 +323,8 @@ def main():
 
             non_first_entries = member_logs[~member_logs['is_first_entry']]
             total_gain = non_first_entries['fanGain'].sum()
-            total_time_minutes = non_first_entries['timeDiffMinutes'].sum()
-            avg_daily_gain = (total_gain / (total_time_minutes / 1440)) if total_time_minutes > 0 else 0
+            total_time_minutes_summary = non_first_entries['timeDiffMinutes'].sum()
+            avg_daily_gain = (total_gain / (total_time_minutes_summary / 1440)) if total_time_minutes_summary > 0 else 0
 
             summary_list.append({
                 'inGameName': name, 'memberID': member['memberID'], 'latestUpdate': latest_update,
@@ -323,6 +340,16 @@ def main():
     output_gain_file = os.path.join(OUTPUT_DIR, 'fanGainAnalysis_output.csv')
     output_summary_file = os.path.join(OUTPUT_DIR, 'memberSummary_output.csv')
     
+    # Save a clean version of the analysis to CSV
+    csv_output_cols = [
+        'timestamp', 'memberID', 'inGameName', 'fanCount', 'fanGain', 
+        'timeDiffMinutes', 'longTermFansPerMinute', 'proj12h', 'proj24h', 
+        'proj3d', 'proj7d', 'projMonthEnd'
+    ]
+    csv_output_df = fan_gain_analysis_df[csv_output_cols].copy()
+    for col in csv_output_df.columns[4:]: # Round numeric columns
+        csv_output_df[col] = csv_output_df[col].round().astype(int)
+
     csv_output_df.to_csv(output_gain_file, index=False)
     member_summary_df.to_csv(output_summary_file, index=False)
     
