@@ -5,11 +5,13 @@ import seaborn as sns
 from datetime import datetime
 import numpy as np
 import os
+import pytz # For timezone handling
 
 # --- Configuration ---
 MEMBERS_CSV = 'Umamusume Pretty Derby_ Cash Crew Fans - members.csv'
 FANLOG_CSV = 'Umamusume Pretty Derby_ Cash Crew Fans - fanLog.csv'
 OUTPUT_DIR = 'Club_Report_Output'
+TIMEZONE = 'America/Chicago' # Central Time (CDT/CST)
 
 # --- Chart Styling ---
 plt.style.use('seaborn-v0_8-whitegrid')
@@ -22,21 +24,25 @@ except:
 plt.rcParams['figure.dpi'] = 150
 
 def format_time_diff(minutes):
-    """Formats a duration in minutes into a clean, readable string (e.g., '3d 4h', '1h 15m')."""
-    if pd.isna(minutes) or minutes <= 0:
-        return '-'
-    days = int(minutes // 1440)
-    hours = int((minutes % 1440) // 60)
-    mins = int(minutes % 60)
-    
-    if days > 0:
-        return f"{days}d {hours}h"
-    elif hours > 0:
-        return f"{hours}h {mins}m"
-    else:
-        return f"{mins}m"
+    """Formats a duration in minutes into a clean, readable string."""
+    if pd.isna(minutes) or minutes <= 0: return '-'
+    days, rem = divmod(minutes, 1440)
+    hours, mins = divmod(rem, 60)
+    days, hours, mins = int(days), int(hours), int(mins)
+    if days > 0: return f"{days}d {hours}h"
+    if hours > 0: return f"{hours}h {mins}m"
+    return f"{mins}m"
 
-def generate_visualizations(summary_df, analysis_df):
+def add_global_timestamps(fig, last_update_time):
+    """Adds 'Last Updated' and 'Generated' timestamps to a figure."""
+    tz = pytz.timezone(TIMEZONE)
+    generated_time = datetime.now(tz).strftime('%Y-%m-%d %I:%M %p %Z')
+    last_update_str = last_update_time.astimezone(tz).strftime('%Y-%m-%d %I:%M %p %Z')
+    
+    fig.text(0.99, 0.01, f"LAST UPDATED: {last_update_str}\nGENERATED: {generated_time}", 
+             color='#A0A0A0', fontsize=8, style='italic', ha='right', va='bottom')
+
+def generate_visualizations(summary_df, analysis_df, last_update_time):
     """Creates and saves all the requested charts and logs."""
     print("\n--- 3. Generating Visualizations ---")
     if not os.path.exists(OUTPUT_DIR):
@@ -44,11 +50,10 @@ def generate_visualizations(summary_df, analysis_df):
         
     # Monthly Leaderboard
     if not summary_df.empty:
-        plt.figure(figsize=(12, 8))
+        fig, ax = plt.subplots(figsize=(12, 8))
         top_10 = summary_df.nlargest(10, 'totalMonthlyGain').copy()
         
-        ax = sns.barplot(x='totalMonthlyGain', y='inGameName', data=top_10, color='#2E7D32', hue='inGameName', dodge=False)
-        plt.legend([],[], frameon=False)
+        sns.barplot(x='totalMonthlyGain', y='inGameName', data=top_10, color='#2E7D32', ax=ax)
         
         ax.xaxis.set_major_formatter(lambda x, pos: f'{int(x/1000):,}K')
         
@@ -56,18 +61,19 @@ def generate_visualizations(summary_df, analysis_df):
             labels = [f'{int(v/1000):,}K' for v in container.datavalues]
             ax.bar_label(container, labels=labels, padding=5, fontsize=10, color='black')
 
-        plt.title('Top 10 Members by Monthly Fan Gain', fontsize=16, weight='bold')
-        plt.xlabel('Total Fans Gained This Month', fontsize=12)
-        plt.ylabel('Member', fontsize=12)
+        ax.set_title('Top 10 Members by Monthly Fan Gain', fontsize=16, weight='bold')
+        ax.set_xlabel('Total Fans Gained This Month', fontsize=12)
+        ax.set_ylabel('Member', fontsize=12)
         ax.set_xlim(right=ax.get_xlim()[1] * 1.15)
-        plt.tight_layout()
+        add_global_timestamps(fig, last_update_time)
+        plt.tight_layout(rect=[0, 0, 1, 0.98])
         plt.savefig(os.path.join(OUTPUT_DIR, 'monthly_leaderboard.png'))
         plt.close()
         print("  - Saved monthly_leaderboard.png")
 
     # Club and Individual Logs
     if not analysis_df.empty:
-        generate_log_image(analysis_df, 'Club Update Log', 'club_update_log.png', limit=25, is_club_log=True)
+        generate_log_image(analysis_df, 'Club Update Log', 'club_update_log.png', last_update_time, limit=25, is_club_log=True)
         print("  - Saved club_update_log.png")
 
         all_members = summary_df.copy().sort_values('totalMonthlyGain', ascending=False)
@@ -80,25 +86,19 @@ def generate_visualizations(summary_df, analysis_df):
             if not member_data.empty:
                 safe_member_name = member_name.replace(' ', '_').replace('/', '').replace('\\', '')
                 filename = f"log_{safe_member_name}.png"
-                generate_log_image(member_data, f"Update Log: {member_name}", filename, limit=25, is_club_log=False, rank=rank)
+                generate_log_image(member_data, f"Update Log: {member_name}", filename, last_update_time, limit=25, is_club_log=False, rank=rank)
         print(f"  - Saved individual update logs for {len(all_members)} members.")
     
-    # New Club Pacing Chart
     if not analysis_df.empty:
-        generate_club_pacing_chart(analysis_df)
-
-    # New Member Cumulative Gain Chart
-    if not analysis_df.empty:
-        generate_member_area_chart(analysis_df)
+        generate_club_pacing_chart(analysis_df, last_update_time)
+        generate_member_area_charts(analysis_df, summary_df, last_update_time)
 
 
-def generate_club_pacing_chart(analysis_df):
+def generate_club_pacing_chart(analysis_df, last_update_time):
     """Generates the cumulative club gain chart with pacing projection."""
     print("  - Generating club pacing chart...")
     monthly_data = analysis_df[analysis_df['timestamp'].dt.month == datetime.now().month].copy()
-    if monthly_data.empty:
-        print("    - Skipping pacing chart: No data for the current month.")
-        return
+    if monthly_data.empty: return
 
     cumulative_gain = monthly_data.groupby(monthly_data['timestamp'].dt.date)['fanGain'].sum().cumsum()
     
@@ -117,67 +117,71 @@ def generate_club_pacing_chart(analysis_df):
     projection_dates = pd.to_datetime([last_day, end_of_month])
     projection_values = [total_gain_so_far, projected_gain]
 
-    plt.figure(figsize=(12, 7))
-    plt.plot(cumulative_gain.index, cumulative_gain.values, marker='o', linestyle='-', label='Actual Club Gain')
-    plt.plot(projection_dates, projection_values, marker='', linestyle='--', color='red', label='Projected Pace')
+    fig, ax = plt.subplots(figsize=(12, 7))
+    ax.plot(cumulative_gain.index, cumulative_gain.values, marker='o', linestyle='-', label='Actual Club Gain')
+    ax.plot(projection_dates, projection_values, marker='', linestyle='--', color='red', label='Projected Pace')
     
-    plt.title('Club Cumulative Fan Gain and Monthly Projection', fontsize=16, weight='bold')
-    plt.xlabel('Date', fontsize=12)
-    plt.ylabel('Cumulative Fans Gained', fontsize=12)
-    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
-    plt.legend()
+    ax.set_title('Club Cumulative Fan Gain and Monthly Projection', fontsize=16, weight='bold')
+    ax.set_xlabel('Date', fontsize=12)
+    ax.set_ylabel('Cumulative Fans Gained', fontsize=12)
+    ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+    ax.legend()
     
-    plt.text(projection_dates[-1], projection_values[-1], f' {int(projected_gain/1000):,}K', color='red', va='center')
+    ax.text(projection_dates[-1], projection_values[-1], f' {int(projected_gain/1000):,}K', color='red', va='center')
     
-    plt.gca().yaxis.set_major_formatter(lambda x, pos: f'{int(x/1000):,}K')
+    ax.yaxis.set_major_formatter(lambda x, pos: f'{int(x/1000):,}K')
     plt.xticks(rotation=45)
-    plt.tight_layout()
+    add_global_timestamps(fig, last_update_time)
+    plt.tight_layout(rect=[0, 0, 1, 0.98])
     plt.savefig(os.path.join(OUTPUT_DIR, 'club_pacing_chart.png'))
     plt.close()
     print("  - Saved club_pacing_chart.png")
 
 
-def generate_member_area_chart(analysis_df):
-    """Generates the new stacked area chart for cumulative gain by member."""
-    print("  - Generating member cumulative gain chart...")
+def generate_member_area_charts(analysis_df, summary_df, last_update_time):
+    """Generates stacked area charts for members, grouped by rank."""
+    print("  - Generating member cumulative gain charts...")
     
-    # Pivot data to have members as columns and their cumulative gain as values
-    pivot_df = analysis_df.pivot_table(index='timestamp', columns='inGameName', values='fanGain', aggfunc='sum').fillna(0)
-    cumulative_df = pivot_df.cumsum()
-
-    # Resample to daily frequency to have a smooth x-axis
-    daily_cumulative_df = cumulative_df.resample('D').max().fillna(method='ffill')
-
-    if daily_cumulative_df.empty:
-        print("    - Skipping member area chart: No data to plot.")
-        return
-
-    plt.figure(figsize=(14, 8))
-    ax = daily_cumulative_df.plot.area(stacked=True, colormap='viridis', linewidth=0.5)
+    ranked_members = summary_df.sort_values('totalMonthlyGain', ascending=False)['inGameName'].tolist()
     
-    plt.title('Cumulative Fan Gain by Member Over Time', fontsize=16, weight='bold')
-    plt.xlabel('Date', fontsize=12)
-    plt.ylabel('Cumulative Fans Gained', fontsize=12)
-    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
-    
-    # Format Y-axis to millions (M)
-    ax.yaxis.set_major_formatter(lambda x, pos: f'{x/1000000:.1f}M')
-    
-    # Improve legend
-    plt.legend(title='Members', bbox_to_anchor=(1.02, 1), loc='upper left')
-    
-    plt.tight_layout(rect=[0, 0, 0.85, 1]) # Adjust layout to make space for legend
-    plt.savefig(os.path.join(OUTPUT_DIR, 'member_cumulative_gain.png'))
-    plt.close()
-    print("  - Saved member_cumulative_gain.png")
+    for i in range(0, len(ranked_members), 5):
+        member_group = ranked_members[i:i+5]
+        rank_start = i + 1
+        rank_end = i + len(member_group)
+        
+        group_data = analysis_df[analysis_df['inGameName'].isin(member_group)]
+        if group_data.empty: continue
+
+        pivot_df = group_data.pivot_table(index='timestamp', columns='inGameName', values='fanGain', aggfunc='sum').fillna(0)
+        cumulative_df = pivot_df.cumsum()
+        daily_cumulative_df = cumulative_df.resample('D').max().fillna(method='ffill')
+
+        if daily_cumulative_df.empty: continue
+
+        fig, ax = plt.subplots(figsize=(14, 8))
+        daily_cumulative_df.plot.area(stacked=True, ax=ax, colormap='viridis', linewidth=0.5)
+        
+        ax.set_title(f'Cumulative Fan Gain: Ranks {rank_start}-{rank_end}', fontsize=16, weight='bold')
+        ax.set_xlabel('Date', fontsize=12)
+        ax.set_ylabel('Cumulative Fans Gained (Millions)', fontsize=12)
+        ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+        
+        ax.yaxis.set_major_formatter(lambda x, pos: f'{x/1000000:.1f}M')
+        ax.legend(title='Members', bbox_to_anchor=(1.02, 1), loc='upper left')
+        
+        add_global_timestamps(fig, last_update_time)
+        plt.tight_layout(rect=[0, 0, 0.85, 1])
+        plt.savefig(os.path.join(OUTPUT_DIR, f'member_cumulative_gain_ranks_{rank_start}-{rank_end}.png'))
+        plt.close()
+    print(f"  - Saved member cumulative gain charts.")
 
 
-def generate_log_image(data, title, filename, limit=25, is_club_log=False, rank=None):
+def generate_log_image(data, title, filename, last_update_time, limit=25, is_club_log=False, rank=None):
     """Generates and saves a CML-style log as an image."""
     if is_club_log:
         log_data = data.groupby('timestamp').agg({
-            'fanGain': 'sum', 'gainLast12h': 'sum', 'gainLast24h': 'sum',
-            'gainLast3d': 'sum', 'gainLast7d': 'sum', 'gainLast30d': 'sum'
+            'fanGain': 'sum', 'pace12h': 'sum', 'pace24h': 'sum',
+            'pace3d': 'sum', 'pace7d': 'sum', 'paceMonthEnd': 'sum'
         }).reset_index()
         log_data = log_data.sort_values('timestamp', ascending=False).head(limit)
         log_data['timeDiffMinutes'] = -log_data['timestamp'].diff(periods=-1).dt.total_seconds() / 60
@@ -195,7 +199,7 @@ def generate_log_image(data, title, filename, limit=25, is_club_log=False, rank=
 
     ax.set_title(title, color='white', fontsize=16, weight='bold', loc='left', pad=20)
     
-    headers = ['Timestamp', 'Time Since', 'Fan Gain', '12h', '24h', '3d', '7d', '30d']
+    headers = ['Timestamp', 'Time Since', 'Fan Gain', '12h', '24h', '3d', '7d', 'Month-End']
     header_positions = [0.01, 0.28, 0.45, 0.58, 0.68, 0.78, 0.88, 0.98]
     for i, header in enumerate(headers):
         ax.text(header_positions[i], 0.97, header, color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top', ha='left' if i < 2 else 'center')
@@ -214,7 +218,7 @@ def generate_log_image(data, title, filename, limit=25, is_club_log=False, rank=
         gain_str = f"+{int(gain_val):,}" if gain_val > 0 else str(int(gain_val))
         gain_color = '#4CAF50' if gain_val > 0 else '#BDBDBD'
         
-        pacing_values = [row['gainLast12h'], row['gainLast24h'], row['gainLast3d'], row['gainLast7d'], row['gainLast30d']]
+        pacing_values = [row['pace12h'], row['pace24h'], row['pace3d'], row['pace7d'], row['paceMonthEnd']]
         
         ax.text(header_positions[0], y_pos, timestamp_str, color='#E0E0E0', fontsize=12, transform=ax.transAxes, va='top')
         ax.text(header_positions[1], y_pos, time_diff_str, color=time_diff_color, fontsize=11, transform=ax.transAxes, va='top', ha='left')
@@ -226,7 +230,8 @@ def generate_log_image(data, title, filename, limit=25, is_club_log=False, rank=
 
         y_pos -= (1 / (limit + 5))
 
-    footer_text = "PACING columns (12h, 24h, 3d, 7d, 30d) show the total fan gain in the trailing time period from the timestamp."
+    footer_text = "PACING columns (12h, 24h, 3d, 7d, Month-End) project total fan gain if the current monthly rate is maintained."
+    add_global_timestamps(fig, last_update_time)
     fig.text(0.01, 0.01, footer_text, color='white', fontsize=9, style='italic', weight='bold', va='bottom')
 
     ax.axis('off')
@@ -248,7 +253,8 @@ def main():
     fanlog_df['fanCount'] = pd.to_numeric(fanlog_df['fanCount'].astype(str).str.replace(',', '', regex=False), errors='coerce')
     fanlog_df['timestamp'] = pd.to_datetime(fanlog_df['timestamp'], errors='coerce')
     fanlog_df.dropna(subset=['fanCount', 'timestamp'], inplace=True)
-    print(f"Found {len(fanlog_df)} valid log entries after cleaning.")
+    last_update_time = fanlog_df['timestamp'].max()
+    print(f"Found {len(fanlog_df)} valid log entries after cleaning. Last data point: {last_update_time}")
 
     print("\n--- 2. Performing Core Analysis ---")
     
@@ -256,35 +262,55 @@ def main():
 
     fanlog_df['previousFanCount'] = fanlog_df.groupby('inGameName')['fanCount'].shift(1)
     fanlog_df['previousTimestamp'] = fanlog_df.groupby('inGameName')['timestamp'].shift(1)
-    
     fanlog_df['is_first_entry'] = fanlog_df['previousTimestamp'].isnull()
-
     fanlog_df['fanGain'] = fanlog_df['fanCount'] - fanlog_df['previousFanCount']
     fanlog_df.loc[fanlog_df['is_first_entry'], 'fanGain'] = 0
 
     time_diff = (fanlog_df['timestamp'] - fanlog_df['previousTimestamp']).dt.total_seconds()
     fanlog_df['timeDiffMinutes'] = (time_diff / 60).fillna(0)
-    fanlog_df['fansPerMinute'] = (fanlog_df['fanGain'] / fanlog_df['timeDiffMinutes']).where(fanlog_df['timeDiffMinutes'] > 0, 0)
     
-    pacing_df = fanlog_df.set_index('timestamp')
-    pacing_df['gainLast12h'] = pacing_df.groupby('inGameName')['fanGain'].rolling('12H').sum().values
-    pacing_df['gainLast24h'] = pacing_df.groupby('inGameName')['fanGain'].rolling('24H').sum().values
-    pacing_df['gainLast3d'] = pacing_df.groupby('inGameName')['fanGain'].rolling('3D').sum().values
-    pacing_df['gainLast7d'] = pacing_df.groupby('inGameName')['fanGain'].rolling('7D').sum().values
-    pacing_df['gainLast30d'] = pacing_df.groupby('inGameName')['fanGain'].rolling('30D').sum().values
-    pacing_df = pacing_df.reset_index()
+    # --- New Pacing Logic ---
+    # Calculate cumulative gain and time within the month for each member
+    current_month = datetime.now().month
+    monthly_logs = fanlog_df[fanlog_df['timestamp'].dt.month == current_month].copy()
+    
+    monthly_logs['monthlyCumulativeGain'] = monthly_logs.groupby('inGameName')['fanGain'].cumsum()
+    
+    first_timestamp_of_month = monthly_logs.groupby('inGameName')['timestamp'].transform('min')
+    monthly_logs['monthlyTimeElapsed_min'] = (monthly_logs['timestamp'] - first_timestamp_of_month).dt.total_seconds() / 60
+    
+    # Calculate the current rate (fans per minute) for the month
+    monthly_logs['monthlyRate'] = (monthly_logs['monthlyCumulativeGain'] / monthly_logs['monthlyTimeElapsed_min']).where(monthly_logs['monthlyTimeElapsed_min'] > 0, 0)
+    
+    # Merge the monthly rate back into the main dataframe
+    fanlog_df = fanlog_df.merge(monthly_logs[['timestamp', 'inGameName', 'monthlyRate']], on=['timestamp', 'inGameName'], how='left')
+    fanlog_df['monthlyRate'] = fanlog_df.groupby('inGameName')['monthlyRate'].ffill().fillna(0)
 
-    fan_gain_analysis_df = pacing_df[[
+    # Project the gain for different timeframes
+    fanlog_df['pace12h'] = fanlog_df['monthlyRate'] * 12 * 60
+    fanlog_df['pace24h'] = fanlog_df['monthlyRate'] * 24 * 60
+    fanlog_df['pace3d'] = fanlog_df['monthlyRate'] * 3 * 24 * 60
+    fanlog_df['pace7d'] = fanlog_df['monthlyRate'] * 7 * 24 * 60
+    
+    # Project to month-end
+    end_of_month = pd.to_datetime(datetime.now()).to_period('M').end_time.tz_localize(fanlog_df['timestamp'].dt.tz)
+    fanlog_df['minutes_to_month_end'] = (end_of_month - fanlog_df['timestamp']).dt.total_seconds() / 60
+    fanlog_df['paceMonthEnd'] = fanlog_df['monthlyCumulativeGain'] + (fanlog_df['monthlyRate'] * fanlog_df['minutes_to_month_end'])
+    
+    # Create the final analysis dataframe
+    analysis_cols = [
         'timestamp', 'memberID', 'inGameName', 'fanCount', 'fanGain', 'timeDiffMinutes', 
-        'fansPerMinute', 'gainLast12h', 'gainLast24h', 'gainLast3d', 'gainLast7d', 'gainLast30d', 'is_first_entry'
-    ]].copy()
+        'pace12h', 'pace24h', 'pace3d', 'pace7d', 'paceMonthEnd', 'is_first_entry'
+    ]
+    fan_gain_analysis_df = fanlog_df[analysis_cols].copy()
     
     csv_output_df = fan_gain_analysis_df.drop(columns=['is_first_entry']).copy()
-    for col in ['fanGain', 'timeDiffMinutes', 'fansPerMinute', 'gainLast12h', 'gainLast24h', 'gainLast3d', 'gainLast7d', 'gainLast30d']:
+    for col in ['fanGain', 'timeDiffMinutes', 'pace12h', 'pace24h', 'pace3d', 'pace7d', 'paceMonthEnd']:
         csv_output_df[col] = csv_output_df[col].round().astype(int)
 
     print("  - Fan gain analysis complete.")
 
+    # --- Member Summary Calculation ---
     report_date = pd.to_datetime(datetime.now())
     active_members_df = members_df[members_df['status'].isin(['Active', 'Pending'])].copy()
     summary_list = []
@@ -298,11 +324,8 @@ def main():
             days_since_update = (report_date - latest_update).days
             
             start_of_month = report_date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            monthly_logs = member_logs[member_logs['timestamp'] >= start_of_month]
-            total_monthly_gain = monthly_logs['fanGain'].sum()
-
-            gain_last_7_days = member_logs[member_logs['timestamp'] > (report_date - pd.Timedelta(days=7))]['fanGain'].sum()
-            gain_last_14_days = member_logs[member_logs['timestamp'] > (report_date - pd.Timedelta(days=14))]['fanGain'].sum()
+            monthly_logs_summary = member_logs[member_logs['timestamp'] >= start_of_month]
+            total_monthly_gain = monthly_logs_summary['fanGain'].sum()
 
             non_first_entries = member_logs[~member_logs['is_first_entry']]
             total_gain = non_first_entries['fanGain'].sum()
@@ -312,13 +335,13 @@ def main():
             summary_list.append({
                 'inGameName': name, 'memberID': member['memberID'], 'latestUpdate': latest_update,
                 'daysSinceUpdate': days_since_update, 'totalMonthlyGain': total_monthly_gain,
-                'avgDailyGain': avg_daily_gain, 'gainLast7Days': gain_last_7_days, 'gainLast14Days': gain_last_14_days
+                'avgDailyGain': avg_daily_gain
             })
 
     member_summary_df = pd.DataFrame(summary_list)
     print("  - Member summary complete.")
 
-    generate_visualizations(member_summary_df, fan_gain_analysis_df)
+    generate_visualizations(member_summary_df, fan_gain_analysis_df, last_update_time)
 
     output_gain_file = os.path.join(OUTPUT_DIR, 'fanGainAnalysis_output.csv')
     output_summary_file = os.path.join(OUTPUT_DIR, 'memberSummary_output.csv')
