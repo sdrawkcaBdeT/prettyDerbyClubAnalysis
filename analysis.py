@@ -158,16 +158,13 @@ def generate_member_area_chart(analysis_df, summary_df, last_updated_str, genera
     
     ranked_analysis_df['time_group'] = ranked_analysis_df['timestamp'].dt.floor('6H')
 
-    bins = [0, 5, 10, 15, 20, 25, 30]
-    labels = ['Ranks 1-5', 'Ranks 6-10', 'Ranks 11-15', 'Ranks 16-20', 'Ranks 21-25', 'Ranks 26-30']
+    bins = [0, 5, 10, 15, 20, 25, 30, np.inf]
+    labels = ['Ranks 1-5', 'Ranks 6-10', 'Ranks 11-15', 'Ranks 16-20', 'Ranks 21-25', 'Ranks 26-30', 'Ranks 31+']
     ranked_analysis_df['Rank Group'] = pd.cut(ranked_analysis_df['rank'], bins=bins, labels=labels, right=True)
 
-    # --- Corrected Logic ---
-    # 1. Pivot the raw fanGain data (NOT cumulative)
     pivot_df = ranked_analysis_df.pivot_table(index='time_group', columns='Rank Group', values='fanGain', aggfunc='sum').fillna(0)
     
-    # 2. Create the cumulative DataFrame for calculations, but don't plot it directly.
-    cumulative_df = pivot_df.cumsum(axis=1)
+    cumulative_df = pivot_df.cumsum()
     
     if pivot_df.empty:
         print("    - Skipping member area chart: No data to plot.")
@@ -179,24 +176,17 @@ def generate_member_area_chart(analysis_df, summary_df, last_updated_str, genera
     fig, ax = plt.subplots(figsize=(16, 10))
     colors = plt.cm.get_cmap('tab10', len(pivot_df.columns))
     
-    # 3. Plot the non-cumulative data and let the plot function handle stacking
     pivot_df.plot.area(ax=ax, stacked=True, color=colors.colors, linewidth=0.5, legend=False)
     
-    # 4. Use the cumulative data to correctly position annotations
     y_previous = np.zeros(len(cumulative_df.index))
     for i, col in enumerate(cumulative_df.columns):
         y_values = cumulative_df[col].values
-        # Calculate the center of the current stacked area
         y_centers = y_previous + (y_values - y_previous) / 2
-        percentages = percentage_df[col].values - percentage_df.shift(1, axis=1).fillna(0)[col].values
+        percentages = percentage_df[col].values
 
         for j, (x, y, p) in enumerate(zip(cumulative_df.index, y_centers, percentages)):
              if p > 1:
-                ax.text(x, y, f'{p:.0f}%', ha='center', va='center',
-        fontsize=18,  # <-- ADJUST THIS VALUE
-        color='white',
-        weight='bold',
-        path_effects=[pe.withStroke(linewidth=4, foreground='black')])
+                ax.text(x, y, f'{p:.0f}%', ha='center', va='center', fontsize=14, color='white', weight='bold', path_effects=[pe.withStroke(linewidth=3, foreground='black')])
         
         y_previous = y_values
 
@@ -207,7 +197,6 @@ def generate_member_area_chart(analysis_df, summary_df, last_updated_str, genera
     
     ax.yaxis.set_major_formatter(lambda x, pos: f'{x/1000000:.1f}M')
     
-    # Manually create legend from colors and labels
     handles, labels = ax.get_legend_handles_labels()
     ax.legend(handles, pivot_df.columns, title='Rank Groups', bbox_to_anchor=(1.02, 1), loc='upper left')
     
@@ -234,7 +223,7 @@ def generate_log_image(log_data, title, filename, last_updated_str, generated_st
 
     ax.set_title(title, color='white', fontsize=16, weight='bold', loc='left', pad=20)
     
-    headers = ['Timestamp', 'Time Since', 'Fan Gain', '12h', '24h', '3d', '7d', '30d'] if is_club_log else ['Timestamp', 'Time Since', 'Fan Gain', '12h', '24h', '3d', '7d', 'Month-End']
+    headers = ['Timestamp', 'Time Since', 'Fan Gain', '12h', '24h', '3d', '7d', 'Month-End'] if is_club_log else ['Timestamp', 'Time Since', 'Fan Gain', '12h', '24h', '3d', '7d', 'Month-End']
     header_positions = [0.01, 0.28, 0.45, 0.58, 0.68, 0.78, 0.88, 0.98]
     for i, header in enumerate(headers):
         ax.text(header_positions[i], 0.97, header, color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top', ha='left' if i < 2 else 'center')
@@ -254,7 +243,7 @@ def generate_log_image(log_data, title, filename, last_updated_str, generated_st
         gain_color = '#4CAF50' if gain_val > 0 else '#BDBDBD'
         
         if is_club_log:
-            pacing_values = [row['gainLast12h'], row['gainLast24h'], row['gainLast3d'], row['gainLast7d'], row['gainLast30d']]
+            pacing_values = [row['proj12h'], row['proj24h'], row['proj3d'], row['proj7d'], row['proj30d']]
         else:
             pacing_values = [row['proj12h'], row['proj24h'], row['proj3d'], row['proj7d'], row['projMonthEnd']]
 
@@ -268,8 +257,8 @@ def generate_log_image(log_data, title, filename, last_updated_str, generated_st
 
         y_pos -= (1 / (limit + 5))
 
-    footer_text_main = "PACING columns show total fan gain in the trailing time period." if is_club_log else "PACING columns show projected gain based on long-term performance."
-    fig.text(0.5, 0.05, footer_text_main, color='white', fontsize=9, style='italic', weight='bold', va='bottom', ha='center')
+    footer_text = "PACING columns show projected gain based on long-term performance."
+    fig.text(0.5, 0.05, footer_text, color='white', fontsize=9, style='italic', weight='bold', va='bottom', ha='center')
     add_timestamps_to_fig(fig, last_updated_str, generated_str)
     
     ax.axis('off')
@@ -338,19 +327,26 @@ def main():
     individual_log_df = fanlog_df.copy()
     print("  - Individual projection analysis complete.")
 
-    # --- Calculations for CLUB LOG (Backward-looking) ---
-    club_log_df = fanlog_df.groupby('timestamp').agg(fanGain=('fanGain', 'sum')).reset_index()
-    club_log_df = club_log_df.sort_values('timestamp', ascending=True)
+    # --- Calculations for CLUB LOG (Projections) ---
+    club_events = fanlog_df.groupby('timestamp').agg(fanGain=('fanGain', 'sum')).reset_index()
+    club_events = club_events.sort_values('timestamp', ascending=True)
     
-    temp_df = club_log_df.set_index('timestamp')
-    club_log_df['gainLast12h'] = temp_df['fanGain'].rolling('12H').sum().values
-    club_log_df['gainLast24h'] = temp_df['fanGain'].rolling('24H').sum().values
-    club_log_df['gainLast3d'] = temp_df['fanGain'].rolling('3D').sum().values
-    club_log_df['gainLast7d'] = temp_df['fanGain'].rolling('7D').sum().values
-    club_log_df['gainLast30d'] = temp_df['fanGain'].rolling('30D').sum().values
+    club_events['cumulativeGain'] = club_events['fanGain'].cumsum()
+    first_timestamp = club_events['timestamp'].iloc[0]
+    club_events['minutesElapsed'] = (club_events['timestamp'] - first_timestamp).dt.total_seconds() / 60
     
-    club_log_df['timeDiffMinutes'] = (club_log_df['timestamp'].diff().dt.total_seconds() / 60).values
-    print("  - Club summary analysis complete.")
+    club_events['clubFansPerMinute'] = (club_events['cumulativeGain'] / club_events['minutesElapsed']).where(club_events['minutesElapsed'] > 0, 0)
+
+    club_events['proj12h'] = club_events['clubFansPerMinute'] * 12 * 60
+    club_events['proj24h'] = club_events['clubFansPerMinute'] * 24 * 60
+    club_events['proj3d'] = club_events['clubFansPerMinute'] * 3 * 24 * 60
+    club_events['proj7d'] = club_events['clubFansPerMinute'] * 7 * 24 * 60
+    club_events['proj30d'] = club_events['clubFansPerMinute'] * 30 * 24 * 60
+
+    club_events['timeDiffMinutes'] = (club_events['timestamp'].diff().dt.total_seconds() / 60).values
+    
+    club_log_df = club_events.copy()
+    print("  - Club projection analysis complete.")
 
     # --- Calculations for Member Summary Table ---
     report_date = pd.to_datetime(datetime.now())
