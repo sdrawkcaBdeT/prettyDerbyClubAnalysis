@@ -15,9 +15,13 @@ FANLOG_CSV = 'Umamusume Pretty Derby_ Cash Crew Fans - fanLog.csv'
 OUTPUT_DIR = 'Club_Report_Output'
 
 # Create a FontProperties object that points to your font file
-# myfont = fm.FontProperties(fname='D:\github/prettyDerbyClubAnalysis/fonts/EXPRESSWAY RG-BOLD.OTF')
-myfont = fm.FontProperties(fname='D:\github/prettyDerbyClubAnalysis/fonts/25318.OTF')
-rankfont = fm.FontProperties(fname='D:\github/prettyDerbyClubAnalysis/fonts/industryultra.OTF')
+try:
+    myfont = fm.FontProperties(fname='D:/github/prettyDerbyClubAnalysis/fonts/25318.OTF')
+    rankfont = fm.FontProperties(fname='D:/github/prettyDerbyClubAnalysis/fonts/industryultra.OTF')
+except Exception as e:
+    myfont = None
+    rankfont = None
+    print(f"Warning: Custom fonts not found, using defaults. Error: {e}")
 
 # --- Chart Styling ---
 plt.style.use('seaborn-v0_8-whitegrid')
@@ -31,7 +35,7 @@ plt.rcParams['figure.dpi'] = 150
 
 def add_timestamps_to_fig(fig, last_updated_str, generated_str):
     """Adds standardized timestamp footers to a matplotlib figure."""
-    fig.text(0.92, 0.01, f"GENERATED: {generated_str}", color='#81fffe', fontsize=8, va='bottom', ha='right')
+    fig.text(0.92, 0.01, f"GENERATED: {generated_str}", color='white', fontsize=8, va='bottom', ha='right')
 
 def format_time_diff(minutes):
     """Formats a duration in minutes into a clean, readable string (e.g., '3d 4h', '1h 15m')."""
@@ -48,7 +52,7 @@ def format_time_diff(minutes):
     else:
         return f"{mins}m"
 
-def generate_visualizations(summary_df, individual_log_df, club_log_df, last_updated_str, generated_str):
+def generate_visualizations(summary_df, individual_log_df, club_log_df, contribution_df, last_updated_str, generated_str):
     """Creates and saves all the requested charts and logs."""
     print("\n--- 3. Generating Visualizations ---")
     if not os.path.exists(OUTPUT_DIR):
@@ -77,6 +81,10 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, last_upd
         plt.savefig(os.path.join(OUTPUT_DIR, 'monthly_leaderboard.png'))
         plt.close(fig)
         print("  - Saved monthly_leaderboard.png")
+        
+    # Fan Contribution Chart
+    if not contribution_df.empty:
+        generate_contribution_chart(contribution_df, last_updated_str, generated_str)
 
     # Club and Individual Logs
     if not club_log_df.empty:
@@ -124,6 +132,45 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, last_upd
     if not individual_log_df.empty and not summary_df.empty:
         generate_member_area_chart(individual_log_df, summary_df, last_updated_str, generated_str)
 
+
+def generate_contribution_chart(contribution_df, last_updated_str, generated_str):
+    """Generates the fan contribution by rank group stacked bar chart."""
+    print("  - Generating fan contribution chart...")
+    
+    fig, ax = plt.subplots(figsize=(14, 4))
+    
+    percentages = contribution_df['percentage']
+    # Define your custom hex colors here
+    my_hex_colors = ['#d7191c', '#fdae61', '#ffffbf', '#abd9e9', '#2c7bb6'] 
+
+    # Ensure the color list is the right size
+    colors = my_hex_colors[:len(percentages)]
+
+    left = 0
+    for i, (label, percentage) in enumerate(percentages.items()):
+        ax.barh('Monthly Fan Gain', percentage, left=left, label=label, color=colors[i], edgecolor='white')
+        
+        if percentage > 2:
+            ax.text(left + percentage / 2, 0, f'{percentage:.0f}%', ha='center', va='center', color='white', weight='bold', fontsize=12, path_effects=[pe.withStroke(linewidth=2, foreground='black')])
+        left += percentage
+
+    ax.set_xlim(0, 100)
+    ax.set_xticks(np.arange(0, 101, 10))
+    ax.set_xticklabels([f'{x}%' for x in np.arange(0, 101, 10)])
+    ax.set_yticklabels([])
+    ax.set_ylabel('')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_visible(False)
+
+    plt.title('Monthly Fan Contribution by Rank Group', fontsize=16, weight='bold', loc='left', y=1.075)
+    ax.legend(title='', bbox_to_anchor=(0.5, 1.1), loc='upper center', ncol=len(percentages))
+    
+    plt.tight_layout(rect=[0, 0.05, 0.85, 0.95])
+    add_timestamps_to_fig(fig, last_updated_str, generated_str)
+    plt.savefig(os.path.join(OUTPUT_DIR, 'fan_contribution_by_rank.png'))
+    plt.close(fig)
+    print("  - Saved fan_contribution_by_rank.png")
 
 def generate_club_pacing_chart(analysis_df, last_updated_str, generated_str):
     """Generates the cumulative club gain chart with pacing projection."""
@@ -247,8 +294,8 @@ def generate_log_image(log_data, title, filename, last_updated_str, generated_st
 
     ax.set_title(title, color='white', loc='left', pad=20, fontproperties=rankfont, fontsize=16)
     
-    headers = ['Timestamp', 'Time Since', 'Fan Gain', '12h', '24h', '3d', '7d', 'Month-End'] if is_club_log else ['Timestamp', 'Time Since', 'Fan Gain', '12h', '24h', '3d', '7d', 'Month-End']
-    header_positions = [0.01, 0.28, 0.45, 0.58, 0.68, 0.78, 0.88, 0.98]
+    headers = ['Timestamp', 'Time Since', 'Fan Gain', 'Fan/Hr', '12h', '24h', '3d', '7d', 'Month-End']
+    header_positions = [0.01, 0.22, 0.36, 0.47, 0.58, 0.68, 0.78, 0.88, 0.98]
     # club-log specific header
     if is_club_log:
         ax.text(0.78, 0.99, 'Values in Millions', color='white', fontsize=10, weight='bold', transform=ax.transAxes, ha='center', fontproperties=myfont)
@@ -269,6 +316,16 @@ def generate_log_image(log_data, title, filename, last_updated_str, generated_st
         gain_str = f"+{int(gain_val):,}" if gain_val > 0 else str(int(gain_val))
         gain_color = '#4CAF50' if gain_val > 0 else '#BDBDBD'
         
+        # Calculate Fan/Hr
+        time_hours = row['timeDiffMinutes'] / 60
+        fan_per_hour = row['fanGain'] / time_hours if time_hours > 0 else 0
+
+        # Format the Fan/Hr string based on log type
+        if is_club_log:
+            fph_str = f"{(fan_per_hour / 1000000):.1f}"
+        else:
+            fph_str = f"{int(fan_per_hour/1000):,}K" if fan_per_hour >= 1000 else str(int(fan_per_hour))
+        
         if is_club_log:
             pacing_values = [row['proj12h'], row['proj24h'], row['proj3d'], row['proj7d'], row['proj30d']]
         else:
@@ -277,6 +334,7 @@ def generate_log_image(log_data, title, filename, last_updated_str, generated_st
         ax.text(header_positions[0], y_pos, timestamp_str, color='#E0E0E0', fontsize=12, transform=ax.transAxes, va='top')
         ax.text(header_positions[1], y_pos, time_diff_str, color=time_diff_color, fontsize=11, transform=ax.transAxes, va='top', ha='left')
         ax.text(header_positions[2], y_pos, gain_str, color=gain_color, fontsize=12, weight='bold', transform=ax.transAxes, ha='center', va='top')
+        ax.text(header_positions[3], y_pos, fph_str, color='#E0E0E0', fontsize=11, transform=ax.transAxes, ha='center', va='top')
         
         for i, val in enumerate(pacing_values):
             if is_club_log:
@@ -285,7 +343,7 @@ def generate_log_image(log_data, title, filename, last_updated_str, generated_st
             else:
                 # Format for INDIVIDUAL log: thousands with a "K"
                 pacing_str = f"{int(val/1000):,}K" if val >= 1000 else str(int(val))
-            ax.text(header_positions[i+3], y_pos, pacing_str, color='#E0E0E0', fontsize=11, transform=ax.transAxes, ha='center', va='top')
+            ax.text(header_positions[i+4], y_pos, pacing_str, color='#E0E0E0', fontsize=11, transform=ax.transAxes, ha='center', va='top')
 
         y_pos -= (1 / (limit + 5))
 
@@ -410,9 +468,23 @@ def main():
 
     member_summary_df = pd.DataFrame(summary_list)
     print("  - Member summary table complete.")
+    
+    # --- Calculations for Fan Contribution Chart ---
+    summary_with_ranks = member_summary_df.sort_values('totalMonthlyGain', ascending=False).copy()
+    summary_with_ranks['rank'] = range(1, len(summary_with_ranks) + 1)
+    
+    bins = [0, 6, 12, 18, 24, 30]
+    labels = ['Ranks 1-6', 'Ranks 7-12', 'Ranks 13-18', 'Ranks 19-24', 'Ranks 25-30']
+    summary_with_ranks['Rank Group'] = pd.cut(summary_with_ranks['rank'], bins=bins, labels=labels, right=True)
+
+    contribution_df = summary_with_ranks.groupby('Rank Group')['totalMonthlyGain'].sum().reset_index()
+    total_club_gain = contribution_df['totalMonthlyGain'].sum()
+    contribution_df['percentage'] = (contribution_df['totalMonthlyGain'] / total_club_gain) * 100
+    contribution_df = contribution_df.set_index('Rank Group')
+    print("  - Fan contribution analysis complete.")
 
     # --- Generate all outputs ---
-    generate_visualizations(member_summary_df, individual_log_df, club_log_df, last_updated_str, generated_str)
+    generate_visualizations(member_summary_df, individual_log_df, club_log_df, contribution_df, last_updated_str, generated_str)
 
     output_gain_file = os.path.join(OUTPUT_DIR, 'fanGainAnalysis_output.csv')
     output_summary_file = os.path.join(OUTPUT_DIR, 'memberSummary_output.csv')
