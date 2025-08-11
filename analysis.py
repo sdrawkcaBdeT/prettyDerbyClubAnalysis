@@ -86,7 +86,26 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, last_upd
     if not individual_log_df.empty:
         all_members = summary_df.copy().sort_values('totalMonthlyGain', ascending=False)
         all_members['rank'] = range(1, len(all_members) + 1)
+        
+        
+        # ## Individual Logs - Without Anonymous (first-6 of id)
+        # for _, member_row in all_members.iterrows():
+        #     # Get both name and ID from the summary data
+        #     member_name = member_row['inGameName']
+        #     member_id = member_row['memberID']
+        #     rank = member_row['rank']
 
+        #     # --- This is the key change: Filter by the stable memberID ---
+        #     member_data = individual_log_df[individual_log_df['memberID'] == member_id]
+
+        #     if not member_data.empty:
+        #         # Create a clean 7-digit ID for the filename
+        #         short_id = str(member_id)[:7]
+        #         filename = f"log_{short_id}.png"
+        #         generate_log_image(member_data, f"Update Log: {short_id}   |   Updated {last_updated_str}", filename, last_updated_str, generated_str, limit=25, is_club_log=False, rank=rank)
+        # print(f"  - Saved individual update logs for {len(all_members)} members.")
+        
+        ## Individual Logs - With IGN
         for _, member_row in all_members.iterrows():
             member_name = member_row['inGameName']
             rank = member_row['rank']
