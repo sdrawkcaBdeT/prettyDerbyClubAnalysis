@@ -7,11 +7,17 @@ import numpy as np
 import os
 import pytz
 import matplotlib.patheffects as pe
+import matplotlib.font_manager as fm
 
 # --- Configuration ---
 MEMBERS_CSV = 'Umamusume Pretty Derby_ Cash Crew Fans - members.csv'
 FANLOG_CSV = 'Umamusume Pretty Derby_ Cash Crew Fans - fanLog.csv'
 OUTPUT_DIR = 'Club_Report_Output'
+
+# Create a FontProperties object that points to your font file
+# myfont = fm.FontProperties(fname='D:\github/prettyDerbyClubAnalysis/fonts/EXPRESSWAY RG-BOLD.OTF')
+myfont = fm.FontProperties(fname='D:\github/prettyDerbyClubAnalysis/fonts/25318.OTF')
+rankfont = fm.FontProperties(fname='D:\github/prettyDerbyClubAnalysis/fonts/industryultra.OTF')
 
 # --- Chart Styling ---
 plt.style.use('seaborn-v0_8-whitegrid')
@@ -25,8 +31,7 @@ plt.rcParams['figure.dpi'] = 150
 
 def add_timestamps_to_fig(fig, last_updated_str, generated_str):
     """Adds standardized timestamp footers to a matplotlib figure."""
-    fig.text(0.01, 0.01, f"LAST UPDATED: {last_updated_str}", color='gray', fontsize=8, va='bottom', ha='left')
-    fig.text(0.99, 0.01, f"GENERATED: {generated_str}", color='gray', fontsize=8, va='bottom', ha='right')
+    fig.text(0.92, 0.01, f"GENERATED: {generated_str}", color='#81fffe', fontsize=8, va='bottom', ha='right')
 
 def format_time_diff(minutes):
     """Formats a duration in minutes into a clean, readable string (e.g., '3d 4h', '1h 15m')."""
@@ -75,7 +80,7 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, last_upd
 
     # Club and Individual Logs
     if not club_log_df.empty:
-        generate_log_image(club_log_df, 'Club Update Log', 'club_update_log.png', last_updated_str, generated_str, limit=25, is_club_log=True)
+        generate_log_image(club_log_df, f"Club Update Log   |   Updated {last_updated_str}", 'club_update_log.png', last_updated_str, generated_str, limit=25, is_club_log=True)
         print("  - Saved club_update_log.png")
 
     if not individual_log_df.empty:
@@ -89,7 +94,7 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, last_upd
             if not member_data.empty:
                 safe_member_name = member_name.replace(' ', '_').replace('/', '').replace('\\', '')
                 filename = f"log_{safe_member_name}.png"
-                generate_log_image(member_data, f"Update Log: {member_name}", filename, last_updated_str, generated_str, limit=25, is_club_log=False, rank=rank)
+                generate_log_image(member_data, f"Update Log: {member_name}   |   Updated {last_updated_str}", filename, last_updated_str, generated_str, limit=25, is_club_log=False, rank=rank)
         print(f"  - Saved individual update logs for {len(all_members)} members.")
     
     # Club Pacing Chart
@@ -219,12 +224,15 @@ def generate_log_image(log_data, title, filename, last_updated_str, generated_st
     ax.set_facecolor('#2E2E2E')
     
     if rank:
-        ax.text(0.99, 1.0, f"RANK {rank}", color='#FFD700', fontsize=14, weight='bold', transform=ax.transAxes, ha='right', va='bottom')
+        ax.text(0.99, 1.0, f"RANK {rank}", color='#FFD700', fontsize=14,transform=ax.transAxes, ha='right', va='bottom', fontproperties=rankfont)
 
-    ax.set_title(title, color='white', fontsize=16, weight='bold', loc='left', pad=20)
+    ax.set_title(title, color='white', loc='left', pad=20, fontproperties=rankfont, fontsize=16)
     
     headers = ['Timestamp', 'Time Since', 'Fan Gain', '12h', '24h', '3d', '7d', 'Month-End'] if is_club_log else ['Timestamp', 'Time Since', 'Fan Gain', '12h', '24h', '3d', '7d', 'Month-End']
     header_positions = [0.01, 0.28, 0.45, 0.58, 0.68, 0.78, 0.88, 0.98]
+    # club-log specific header
+    if is_club_log:
+        ax.text(0.78, 0.99, 'Values in Millions', color='white', fontsize=10, weight='bold', transform=ax.transAxes, ha='center', fontproperties=myfont)
     for i, header in enumerate(headers):
         ax.text(header_positions[i], 0.97, header, color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top', ha='left' if i < 2 else 'center')
 
@@ -252,7 +260,12 @@ def generate_log_image(log_data, title, filename, last_updated_str, generated_st
         ax.text(header_positions[2], y_pos, gain_str, color=gain_color, fontsize=12, weight='bold', transform=ax.transAxes, ha='center', va='top')
         
         for i, val in enumerate(pacing_values):
-            pacing_str = f"{int(val/1000):,}K" if val >= 1000 else str(int(val))
+            if is_club_log:
+                # Format for CLUB log: millions with 2 decimal places
+                pacing_str = f"{(val / 1000000):.1f}"
+            else:
+                # Format for INDIVIDUAL log: thousands with a "K"
+                pacing_str = f"{int(val/1000):,}K" if val >= 1000 else str(int(val))
             ax.text(header_positions[i+3], y_pos, pacing_str, color='#E0E0E0', fontsize=11, transform=ax.transAxes, ha='center', va='top')
 
         y_pos -= (1 / (limit + 5))
