@@ -55,7 +55,7 @@ def get_club_month_window(run_time_ct):
 
     return start_date, end_date
 
-def add_timestamps_to_fig(fig, last_updated_str, generated_str):
+def add_timestamps_to_fig(fig, generated_str):
     """Adds standardized timestamp footers to a matplotlib figure."""
     fig.text(0.92, 0.01, f"GENERATED: {generated_str}", color='white', fontsize=8, va='bottom', ha='right')
 
@@ -74,7 +74,7 @@ def format_time_diff(minutes):
     else:
         return f"{mins}m"
 
-def generate_visualizations(summary_df, individual_log_df, club_log_df, contribution_df, historical_df, last_updated_str, generated_str):
+def generate_visualizations(summary_df, individual_log_df, club_log_df, contribution_df, historical_df, last_updated_str, generated_str, start_date, end_date):
     """Creates and saves all the requested charts and logs."""
     print("\n--- 3. Generating Visualizations ---")
     if not os.path.exists(OUTPUT_DIR):
@@ -99,7 +99,7 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, contribu
         plt.ylabel('Member', fontsize=12)
         ax.set_xlim(right=ax.get_xlim()[1] * 1.15)
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        add_timestamps_to_fig(fig, last_updated_str, generated_str)
+        add_timestamps_to_fig(fig, generated_str)
         plt.savefig(os.path.join(OUTPUT_DIR, 'monthly_leaderboard.png'))
         plt.close(fig)
         print("  - Saved monthly_leaderboard.png")
@@ -126,6 +126,18 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, contribu
                 filename = f"log_{safe_member_name}.png"
                 generate_log_image(member_data, f"Update Log: {member_name}   |   Updated {last_updated_str}", filename, generated_str, limit=25, is_club_log=False, rank=rank)
         print(f"  - Saved individual update logs for {len(all_members)} members.")
+        
+    # --- NEW: Generate Cumulative Pacing Logs ---
+    print("\n  - Generating CUMULATIVE individual logs...")
+    for _, member_row in all_members.iterrows():
+        member_name = member_row['inGameName']
+        rank = member_row['rank']
+        member_data = individual_log_df[individual_log_df['inGameName'] == member_name]
+        if not member_data.empty:
+            safe_member_name = member_name.replace(' ', '_').replace('/', '').replace('\\', '')
+            filename = f"log_cumulative_{safe_member_name}.png"
+            generate_log_image(member_data, f"Cumulative Pacing: {member_name}   |   Updated {last_updated_str}", filename, generated_str, limit=25, is_club_log=False, rank=rank, cumulative=True)
+    print(f"  - Saved CUMULATIVE individual update logs for {len(all_members)} members.")
     
     # Club Pacing Chart
     if not individual_log_df.empty:
@@ -137,19 +149,81 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, contribu
     
     # --- NEW: Generate Historical Tables ---
     if not historical_df.empty:
-        generate_historical_table(historical_df, summary_df, "Club & Ranks", "fan_performance_club_rank.png", generated_str)
-        generate_historical_table(historical_df, summary_df, "Members", "fan_performance_members.png", generated_str)
+        generate_performance_heatmap(historical_df, summary_df, "fan_performance_heatmap.png", generated_str, last_updated_str, start_date, end_date)
 
 
-def generate_historical_table(historical_df, summary_df, table_type, filename, generated_str):
-    """Generates the historical data table visualization."""
-    print(f"  - Generating historical table: {table_type}...")
+def generate_performance_heatmap(historical_df, summary_df, filename, generated_str, last_updated_str, start_date, end_date):
+    """Generates the historical performance heatmap for Club and Rank Groups."""
+    print("  - Generating historical performance heatmap...")
     
-    fig, ax = plt.subplots(figsize=(20, 10))
-    ax.text(0.5, 0.5, f"Placeholder for\n{table_type}\nHistorical Data Table", ha='center', va='center', fontsize=24)
-    plt.title(f'Historical Performance: {table_type}', fontsize=18)
-    add_timestamps_to_fig(fig, "", generated_str)
-    plt.savefig(os.path.join(OUTPUT_DIR, filename))
+    # --- Data Preparation ---
+    summary_df = summary_df.sort_values('totalMonthlyGain', ascending=False).copy()
+    summary_df['rank'] = range(1, len(summary_df) + 1)
+    
+    historical_df = pd.merge(historical_df, summary_df[['inGameName', 'rank']], on='inGameName')
+    
+    bins = [0, 6, 12, 18, 24, 30]
+    labels = ['Ranks 1-6', 'Ranks 7-12', 'Ranks 13-18', 'Ranks 19-24', 'Ranks 25-30']
+    historical_df['Rank Group'] = pd.cut(historical_df['rank'], bins=bins, labels=labels, right=True)
+
+    # Create Club and Rank data pivot table
+    club_total = historical_df.groupby('time_group')['fanGain'].sum()
+    rank_groups = historical_df.groupby(['time_group', 'Rank Group'], observed=True)['fanGain'].sum().unstack()
+    data_to_plot = pd.concat([pd.DataFrame({'Club': club_total}), rank_groups], axis=1).T.fillna(0)
+
+    # --- NEW: Pacing Calculations ---
+    cumulative_gain_before = club_total.cumsum().shift(1).fillna(0)
+    time_since_start_before = (club_total.index - start_date).total_seconds() / 3600
+    cumulative_rate_before = (cumulative_gain_before / time_since_start_before).where(time_since_start_before > 0, 0)
+    
+    cumulative_gain_through = club_total.cumsum()
+    time_since_start_through = (club_total.index + pd.Timedelta(hours=8) - start_date).total_seconds() / 3600
+    cumulative_rate_through = (cumulative_gain_through / time_since_start_through).where(time_since_start_through > 0, 0)
+    
+    total_month_hours = (end_date - start_date).total_seconds() / 3600
+
+    projected_window_gain = (cumulative_rate_before * 8).rename("This Window Proj.")
+    projected_eom_gain = (cumulative_rate_through * total_month_hours).rename("End-of-Month Proj.")
+    
+    data_to_plot = pd.concat([data_to_plot, pd.DataFrame(projected_window_gain).T, pd.DataFrame(projected_eom_gain).T])
+    
+    # --- Rendering ---
+    formatted_data = data_to_plot.map(lambda x: f"{x/1000:,.0f}")
+
+    time_cols = [col for col in data_to_plot.columns if isinstance(col, pd.Timestamp)]
+    
+    time_labels = [f"{dt.strftime('%m/%d')}\n{dt.strftime('%H:%M')}-{(dt + pd.Timedelta(hours=7, minutes=59)).strftime('%H:%M')}" for dt in time_cols]
+    
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(max(15, len(time_labels) * 1.2), 10), 
+                                   gridspec_kw={'height_ratios': [len(data_to_plot)-2, 2], 'hspace': 0.1})
+
+    # Top Heatmap (Club & Ranks)
+    sns.heatmap(data_to_plot.iloc[:-2] / 1000, ax=ax1, annot=formatted_data.iloc[:-2], fmt="s", cmap="Greens", cbar=False, linewidths=.5, linecolor='lightgray')
+    ax1.set_ylabel('')
+    ax1.set_xlabel('')
+    ax1.set_xticklabels(time_labels, rotation=0)
+    ax1.xaxis.tick_top()
+    ax1.tick_params(axis='x', length=0)
+    ax1.tick_params(axis='y', rotation=0)
+    
+    # Bottom Heatmap (Pacing)
+    sns.heatmap(data_to_plot.iloc[-2:] / 1000, ax=ax2, annot=formatted_data.iloc[-2:], fmt="s", cmap="Blues", cbar=False, linewidths=.5, linecolor='lightgray')
+    ax2.set_ylabel('')
+    ax2.set_xlabel('')
+    ax2.set_xticklabels([])
+    ax2.tick_params(axis='x', length=0)
+    ax2.tick_params(axis='y', rotation=0)
+
+    # Add a thick line between the two heatmaps
+    ax1.axhline(y=0, color='black', linewidth=2)
+    ax1.axhline(y=len(data_to_plot)-2, color='black', linewidth=2)
+    
+    fig.suptitle(f'Historical Fan Gains (8-Hour Intervals) | Updated: {last_updated_str}', fontsize=18, y=0.98, ha='left', x=0.05)
+    fig.text(0.05, 0.92, "Cell values are actual Fan Gains in 1000s.", ha='left', va='center', fontsize=10, style='italic', color='gray')
+             
+    add_timestamps_to_fig(fig, generated_str)
+    
+    plt.savefig(os.path.join(OUTPUT_DIR, filename), bbox_inches='tight', pad_inches=0.4)
     plt.close(fig)
     print(f"  - Saved {filename}")
 
@@ -185,7 +259,7 @@ def generate_contribution_chart(contribution_df, last_updated_str, generated_str
     ax.legend(title='', bbox_to_anchor=(0.5, 1.1), loc='upper center', ncol=len(percentages))
     
     plt.tight_layout(rect=[0, 0.05, 0.85, 0.95])
-    add_timestamps_to_fig(fig, last_updated_str, generated_str)
+    add_timestamps_to_fig(fig, generated_str)
     plt.savefig(os.path.join(OUTPUT_DIR, 'fan_contribution_by_rank.png'))
     plt.close(fig)
     print("  - Saved fan_contribution_by_rank.png")
@@ -230,7 +304,7 @@ def generate_club_pacing_chart(analysis_df, last_updated_str, generated_str):
     ax.yaxis.set_major_formatter(lambda x, pos: f'{int(x/1000):,}K')
     plt.xticks(rotation=45)
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    add_timestamps_to_fig(fig, last_updated_str, generated_str)
+    add_timestamps_to_fig(fig, generated_str)
     plt.savefig(os.path.join(OUTPUT_DIR, 'club_pacing_chart.png'))
     plt.close(fig)
     print("  - Saved club_pacing_chart.png")
@@ -290,13 +364,13 @@ def generate_member_area_chart(analysis_df, summary_df, last_updated_str, genera
     ax.legend(handles, pivot_df.columns, title='Rank Groups', bbox_to_anchor=(1.02, 1), loc='upper left')
     
     plt.tight_layout(rect=[0, 0.03, 0.88, 0.95])
-    add_timestamps_to_fig(fig, last_updated_str, generated_str)
+    add_timestamps_to_fig(fig, generated_str)
     plt.savefig(os.path.join(OUTPUT_DIR, 'member_cumulative_gain.png'))
     plt.close(fig)
     print("  - Saved member_cumulative_gain.png")
 
 
-def generate_log_image(log_data, title, filename, generated_str, limit=25, is_club_log=False, rank=None):
+def generate_log_image(log_data, title, filename, generated_str, limit=25, is_club_log=False, rank=None, cumulative=False):
     """Generates and saves a CML-style log as an image from pre-processed data."""
     
     log_data_limited = log_data.sort_values('timestamp', ascending=False).head(limit)
@@ -333,8 +407,12 @@ def generate_log_image(log_data, title, filename, generated_str, limit=25, is_cl
         gain_str = f"+{int(gain_val):,}" if gain_val > 0 else str(int(gain_val))
         gain_color = '#4CAF50' if gain_val > 0 else '#BDBDBD'
         
-        time_hours = row['timeDiffMinutes'] / 60
-        fan_per_hour = row['fanGain'] / time_hours if time_hours > 0 else 0
+        # --- NEW: Conditional Pacing Logic ---
+        if cumulative:
+            fan_per_hour = row['monthlyFansPerMinute'] * 60
+        else: # "Current Period" pacing
+            time_hours = row['timeDiffMinutes'] / 60
+            fan_per_hour = row['fanGain'] / time_hours if time_hours > 0 else 0
         
         if is_club_log:
             fph_str = f"{(fan_per_hour / 1000000):.1f}"
@@ -359,9 +437,9 @@ def generate_log_image(log_data, title, filename, generated_str, limit=25, is_cl
 
         y_pos -= (1 / (limit + 5))
 
-    footer_text = "PACING columns show projected gain based on data collection period's Fan/Hr rate."
+    footer_text = "PACING columns show projected gain based on cumulative month-to-date performance." if cumulative else "PACING columns show projected gain based on data collection period's Fan/Hr rate."
     fig.text(0.5, 0.05, footer_text, color='white', fontsize=9, style='italic', weight='bold', va='bottom', ha='center')
-    add_timestamps_to_fig(fig, "", generated_str)
+    add_timestamps_to_fig(fig, generated_str)
     
     ax.axis('off')
     plt.savefig(os.path.join(OUTPUT_DIR, filename), bbox_inches='tight', pad_inches=0.3, facecolor=fig.get_facecolor())
@@ -419,6 +497,12 @@ def main():
     
     individual_log_df = monthly_fan_log.copy()
     print("  - Individual projection analysis complete.")
+    
+    # --- NEW: Calculate Cumulative Monthly Pacing ---
+    individual_log_df['firstTimestampMonth'] = individual_log_df.groupby('inGameName')['timestamp'].transform('first')
+    individual_log_df['cumulativeGainMonth'] = individual_log_df.groupby('inGameName')['fanGain'].cumsum()
+    time_elapsed_month = (individual_log_df['timestamp'] - individual_log_df['firstTimestampMonth']).dt.total_seconds() / 60
+    individual_log_df['monthlyFansPerMinute'] = (individual_log_df['cumulativeGainMonth'] / time_elapsed_month).where(time_elapsed_month > 0, 0)
 
     # --- Calculations for CLUB LOG (Projections) ---
     club_events = monthly_fan_log.groupby('timestamp').agg(fanGain=('fanGain', 'sum')).reset_index()
@@ -480,7 +564,7 @@ def main():
     print("  - Historical data prepared.")
     
     # --- Generate all outputs ---
-    generate_visualizations(member_summary_df, individual_log_df, club_log_df, contribution_df, historical_df, last_updated_str, generated_str)
+    generate_visualizations(member_summary_df, individual_log_df, club_log_df, contribution_df, historical_df, last_updated_str, generated_str, start_date, end_date)
 
     output_gain_file = os.path.join(OUTPUT_DIR, 'fanGainAnalysis_output.csv')
     output_summary_file = os.path.join(OUTPUT_DIR, 'memberSummary_output.csv')
