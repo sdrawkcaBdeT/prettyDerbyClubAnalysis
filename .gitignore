@@ -64,3 +64,7 @@ Club_Report_Output/log_cumulative_Twice.png
 Club_Report_Output/log_cumulative_Walzy.png
 Club_Report_Output/log_cumulative_WaveofGratitude.png
 Club_Report_Output/log_cumulative_Yuto.png
+__pycache__/analysis.cpython-311.pyc
+__pycache__/guiNavigationFunctions.cpython-311.pyc
+dataGet/__pycache__/guiNavigationFunctions.cpython-311.pyc
+.vscode/settings.json

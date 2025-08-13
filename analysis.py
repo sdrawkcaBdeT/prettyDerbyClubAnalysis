@@ -10,8 +10,8 @@ import matplotlib.patheffects as pe
 import matplotlib.font_manager as fm
 
 # --- Configuration ---
-MEMBERS_CSV = 'Umamusume Pretty Derby_ Cash Crew Fans - members.csv'
-FANLOG_CSV = 'Umamusume Pretty Derby_ Cash Crew Fans - fanLog.csv'
+MEMBERS_CSV = 'members.csv'
+FANLOG_CSV = 'fan_log.csv'
 OUTPUT_DIR = 'Club_Report_Output'
 
 # Create a FontProperties object that points to your font file
@@ -84,21 +84,31 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, contribu
     if not summary_df.empty:
         fig, ax = plt.subplots(figsize=(12, 8))
         top_10 = summary_df.nlargest(10, 'totalMonthlyGain').copy()
-        
-        sns.barplot(ax=ax, x='totalMonthlyGain', y='inGameName', data=top_10, color='#2E7D32', hue='inGameName', dodge=False)
+
+        sns.barplot(ax=ax, x='totalMonthlyGain', y='inGameName', data=top_10, palette='dark:#2E7D32', hue='inGameName', dodge=False)
         plt.legend([],[], frameon=False)
-        
+
         ax.xaxis.set_major_formatter(lambda x, pos: f'{int(x/1000):,}K')
-        
+
         for container in ax.containers:
             labels = [f'{int(v/1000):,}K' for v in container.datavalues]
             ax.bar_label(container, labels=labels, padding=5, fontsize=10, color='black')
 
-        plt.title('Top 10 Members by Monthly Fan Gain', fontsize=16, weight='bold')
+        # --- MODIFIED TITLE AND NEW ANNOTATIONS ---
+        plt.title(f'Top 10 Members by Monthly Fan Gain | Updated: {last_updated_str}', fontsize=15, weight='bold', loc='left')
+
+        time_elapsed = (datetime.now(pytz.timezone('US/Central')) - start_date).total_seconds() / 3600
+        total_duration = (end_date - start_date).total_seconds() / 3600
+        time_remaining = total_duration - time_elapsed
+
+        fig.text(0.125, 0.05, f"Time Elapsed: {time_elapsed:.1f} hrs ({time_elapsed / total_duration * 100:.1f}%)", ha='left', va='center', fontsize=10, style='italic', color='gray')
+        fig.text(0.875, 0.05, f"Time Remaining: {time_remaining:.1f} hrs ({time_remaining / total_duration * 100:.1f}%)", ha='right', va='center', fontsize=10, style='italic', color='gray')
+        # ---
+
         plt.xlabel('Total Fans Gained This Month', fontsize=12)
-        plt.ylabel('Member', fontsize=12)
-        ax.set_xlim(right=ax.get_xlim()[1] * 1.15)
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        plt.ylabel('Member', fontsize=14)
+        ax.set_xlim(right=ax.get_xlim()[1] * 1.05)
+        plt.tight_layout(rect=[0, 0.03, 0.975, 0.95]) # Adjust rect to make space for annotations
         add_timestamps_to_fig(fig, generated_str)
         plt.savefig(os.path.join(OUTPUT_DIR, 'monthly_leaderboard.png'))
         plt.close(fig)
@@ -106,7 +116,7 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, contribu
         
     # Fan Contribution Chart
     if not contribution_df.empty:
-        generate_contribution_chart(contribution_df, last_updated_str, generated_str)
+        generate_contribution_chart(contribution_df, last_updated_str, generated_str, start_date, end_date)
 
     # Club and Individual Logs
     if not club_log_df.empty:
@@ -150,6 +160,92 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, contribu
     # --- NEW: Generate Historical Tables ---
     if not historical_df.empty:
         generate_performance_heatmap(historical_df, summary_df, "fan_performance_heatmap.png", generated_str, last_updated_str, start_date, end_date)
+        
+
+def generate_member_summary(summary_df, individual_log_df, start_date, end_date, generated_str):
+    """Generates a summary table of member performance as both a CSV and a styled image."""
+    print("  - Generating member performance summary...")
+
+    # --- 1. Data Calculation ---
+    summary_list = []
+    for _, member in summary_df.iterrows():
+        name = member['inGameName']
+        member_logs = individual_log_df[individual_log_df['inGameName'] == name]
+
+        if not member_logs.empty:
+            first_log = member_logs.iloc[0]
+            latest_log = member_logs.iloc[-1]
+
+            fan_contribution = latest_log['fanCount'] - first_log['fanCount']
+
+            hrs_elapsed = (latest_log['timestamp'] - first_log['timestamp']).total_seconds() / 3600
+            fans_per_hour = fan_contribution / hrs_elapsed if hrs_elapsed > 0 else 0
+
+            hrs_remaining = (end_date - latest_log['timestamp']).total_seconds() / 3600
+
+            month_end_projection = fan_contribution + (fans_per_hour * hrs_remaining)
+
+            summary_list.append({
+                'inGameName': name,
+                'first_update': first_log['timestamp'],
+                'last_update': latest_log['timestamp'],
+                'hrs_elapsed': hrs_elapsed,
+                'hrs_remaining': hrs_remaining,
+                'fan_contribution': fan_contribution,
+                'fans_per_hr': fans_per_hour,
+                'month_end_proj': month_end_projection
+            })
+
+    summary_table = pd.DataFrame(summary_list).sort_values('month_end_proj', ascending=False).reset_index(drop=True)
+
+    # --- 2. Save to CSV ---
+    csv_path = os.path.join(OUTPUT_DIR, 'member_performance_summary.csv')
+    summary_table.to_csv(csv_path, index=False)
+    print(f"  - Saved {csv_path}")
+
+    # --- 3. Generate Image ---
+    # Create a formatted version for the image
+    formatted_table = summary_table.copy()
+    formatted_table['first_update'] = formatted_table['first_update'].dt.strftime('%m/%d %H:%M')
+    formatted_table['last_update'] = formatted_table['last_update'].dt.strftime('%m/%d %H:%M')
+    formatted_table['hrs_elapsed'] = formatted_table['hrs_elapsed'].map('{:,.1f}'.format)
+    formatted_table['hrs_remaining'] = formatted_table['hrs_remaining'].map('{:,.1f}'.format)
+    formatted_table['fan_contribution'] = formatted_table['fan_contribution'].map('{:,.0f}'.format)
+    formatted_table['fans_per_hr'] = formatted_table['fans_per_hr'].map('{:,.0f}'.format)
+    formatted_table['month_end_proj'] = formatted_table['month_end_proj'].map('{:,.0f}'.format)
+
+    # Rename columns for display
+    formatted_table.rename(columns={
+        'inGameName': 'Member', 'first_update': 'First Update', 'last_update': 'Last Update',
+        'hrs_elapsed': 'Hrs Elapsed', 'hrs_remaining': 'Hrs Remaining', 'fan_contribution': 'Fan Contribution',
+        'fans_per_hr': 'Fans/Hr', 'month_end_proj': 'Month-End Proj.'
+    }, inplace=True)
+
+    # Rendering logic
+    fig, ax = plt.subplots(figsize=(16, max(6, len(formatted_table) * 0.5)))
+    ax.axis('off')
+    fig.patch.set_facecolor('#2E2E2E')
+
+    table = ax.table(cellText=formatted_table.values,
+                     colLabels=formatted_table.columns,
+                     cellLoc='center',
+                     loc='center',
+                     colWidths=[0.2, 0.1, 0.1, 0.1, 0.1, 0.15, 0.1, 0.15])
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1, 2)
+
+    for (i, j), cell in table.get_celld().items():
+        cell.set_text_props(color='white' if i==0 else 'black')
+        cell.set_facecolor('#40466e' if i==0 else ('#f2f2f2' if (i-1) % 2 == 0 else 'white'))
+
+    plt.title('Member Performance Summary', color='white', fontsize=18, weight='bold', y=0.95)
+    add_timestamps_to_fig(fig, generated_str)
+
+    img_path = os.path.join(OUTPUT_DIR, 'member_performance_summary.png')
+    plt.savefig(img_path, bbox_inches='tight', pad_inches=0.4, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print(f"  - Saved {img_path}")
 
 
 def generate_performance_heatmap(historical_df, summary_df, filename, generated_str, last_updated_str, start_date, end_date):
@@ -198,41 +294,41 @@ def generate_performance_heatmap(historical_df, summary_df, filename, generated_
                                    gridspec_kw={'height_ratios': [len(data_to_plot)-2, 2], 'hspace': 0.1})
 
     # Top Heatmap (Club & Ranks)
-    sns.heatmap(data_to_plot.iloc[:-2] / 1000, ax=ax1, annot=formatted_data.iloc[:-2], fmt="s", cmap="Greens", cbar=False, linewidths=.5, linecolor='lightgray')
+    sns.heatmap(data_to_plot.iloc[:-2] / 1000, ax=ax1, annot=formatted_data.iloc[:-2], fmt="s", cmap="Greens", cbar=False, linewidths=.5, linecolor='lightgray', annot_kws={"size": 14})
     ax1.set_ylabel('')
     ax1.set_xlabel('')
     ax1.set_xticklabels(time_labels, rotation=0)
     ax1.xaxis.tick_top()
     ax1.tick_params(axis='x', length=0)
-    ax1.tick_params(axis='y', rotation=0)
+    ax1.tick_params(axis='y', rotation=0, labelsize=13)
     
     # Bottom Heatmap (Pacing)
-    sns.heatmap(data_to_plot.iloc[-2:] / 1000, ax=ax2, annot=formatted_data.iloc[-2:], fmt="s", cmap="Blues", cbar=False, linewidths=.5, linecolor='lightgray')
+    sns.heatmap(data_to_plot.iloc[-2:] / 1000, ax=ax2, annot=formatted_data.iloc[-2:], fmt="s", cmap="Blues", cbar=False, linewidths=.5, linecolor='lightgray', annot_kws={"size": 14})
     ax2.set_ylabel('')
     ax2.set_xlabel('')
     ax2.set_xticklabels([])
     ax2.tick_params(axis='x', length=0)
-    ax2.tick_params(axis='y', rotation=0)
+    ax2.tick_params(axis='y', rotation=0, labelsize=13)
 
     # Add a thick line between the two heatmaps
     ax1.axhline(y=0, color='black', linewidth=2)
     ax1.axhline(y=len(data_to_plot)-2, color='black', linewidth=2)
     
     fig.suptitle(f'Historical Fan Gains (8-Hour Intervals) | Updated: {last_updated_str}', fontsize=18, y=0.98, ha='left', x=0.05)
-    fig.text(0.05, 0.92, "Cell values are actual Fan Gains in 1000s.", ha='left', va='center', fontsize=10, style='italic', color='gray')
+    fig.text(0.05, 0.945, "Cell values are actual Fan Gains in 1000s.", ha='left', va='center', fontsize=10, style='italic', color='gray')
              
     add_timestamps_to_fig(fig, generated_str)
     
-    plt.savefig(os.path.join(OUTPUT_DIR, filename), bbox_inches='tight', pad_inches=0.4)
+    plt.savefig(os.path.join(OUTPUT_DIR, filename), bbox_inches='tight', pad_inches=0.3)
     plt.close(fig)
     print(f"  - Saved {filename}")
 
 
-def generate_contribution_chart(contribution_df, last_updated_str, generated_str):
+def generate_contribution_chart(contribution_df, last_updated_str, generated_str, start_date, end_date):
     """Generates the fan contribution by rank group stacked bar chart."""
     print("  - Generating fan contribution chart...")
     
-    fig, ax = plt.subplots(figsize=(14, 4))
+    fig, ax = plt.subplots(figsize=(28, 8))
     
     percentages = contribution_df['percentage']
     my_hex_colors = ['#d7191c', '#fdae61', '#ffffbf', '#abd9e9', '#2c7bb6'] 
@@ -243,22 +339,26 @@ def generate_contribution_chart(contribution_df, last_updated_str, generated_str
         ax.barh('Monthly Fan Gain', percentage, left=left, label=label, color=colors[i], edgecolor='white')
         
         if percentage > 2:
-            ax.text(left + percentage / 2, 0, f'{percentage:.0f}%', ha='center', va='center', color='white', weight='bold', fontsize=12, path_effects=[pe.withStroke(linewidth=2, foreground='black')])
+            ax.text(left + percentage / 2, 0, f'{percentage:.0f}%', ha='center', va='center', color='white', weight='bold', fontsize=20, path_effects=[pe.withStroke(linewidth=4, foreground='black')])
         left += percentage
 
     ax.set_xlim(0, 100)
     ax.set_xticks(np.arange(0, 101, 10))
     ax.set_xticklabels([f'{x}%' for x in np.arange(0, 101, 10)])
+    ax.tick_params(axis='x', labelsize=24)
     ax.set_yticklabels([])
     ax.set_ylabel('')
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.spines['left'].set_visible(False)
 
-    plt.title('Monthly Fan Contribution by Rank Group', fontsize=16, weight='bold', loc='left', y=1.075)
-    ax.legend(title='', bbox_to_anchor=(0.5, 1.1), loc='upper center', ncol=len(percentages))
+    plt.title(f'Monthly Fan Contribution by Rank Group | Updated: {last_updated_str}', fontsize=24, weight='bold', loc='left', y=1.075)
+    ax.legend(title='', bbox_to_anchor=(0.5, 1.075), loc='upper center', ncol=len(percentages), fontsize=16)
     
-    plt.tight_layout(rect=[0, 0.05, 0.85, 0.95])
+    time_elapsed = (datetime.now(pytz.timezone('US/Central')) - start_date).total_seconds() / 3600
+    time_remaining = (end_date - datetime.now(pytz.timezone('US/Central'))).total_seconds() / 3600
+    
+    plt.tight_layout(rect=[0, 0.05, 0.95, 0.95])
     add_timestamps_to_fig(fig, generated_str)
     plt.savefig(os.path.join(OUTPUT_DIR, 'fan_contribution_by_rank.png'))
     plt.close(fig)
@@ -363,7 +463,7 @@ def generate_member_area_chart(analysis_df, summary_df, last_updated_str, genera
     handles, labels = ax.get_legend_handles_labels()
     ax.legend(handles, pivot_df.columns, title='Rank Groups', bbox_to_anchor=(1.02, 1), loc='upper left')
     
-    plt.tight_layout(rect=[0, 0.03, 0.88, 0.95])
+    plt.tight_layout(pad=1.5)
     add_timestamps_to_fig(fig, generated_str)
     plt.savefig(os.path.join(OUTPUT_DIR, 'member_cumulative_gain.png'))
     plt.close(fig)
@@ -565,6 +665,9 @@ def main():
     
     # --- Generate all outputs ---
     generate_visualizations(member_summary_df, individual_log_df, club_log_df, contribution_df, historical_df, last_updated_str, generated_str, start_date, end_date)
+    # Generate Member Performance Summary
+    if not member_summary_df.empty and not individual_log_df.empty:
+        generate_member_summary(member_summary_df, individual_log_df, start_date, end_date, generated_str)
 
     output_gain_file = os.path.join(OUTPUT_DIR, 'fanGainAnalysis_output.csv')
     output_summary_file = os.path.join(OUTPUT_DIR, 'memberSummary_output.csv')
@@ -573,11 +676,17 @@ def main():
         'timestamp', 'memberID', 'inGameName', 'fanCount', 'fanGain', 
         'timeDiffMinutes'
     ]
-    csv_output_df = individual_log_df[csv_output_cols].copy()
-    for col in csv_output_df.columns[4:]:
-        csv_output_df[col] = csv_output_df[col].round().astype(int)
+    # Merge with members_df to get the memberID back
+    final_csv_df = pd.merge(individual_log_df, members_df[['inGameName', 'memberID']], on='inGameName', how='left')
 
-    csv_output_df.to_csv(output_gain_file, index=False)
+    # Select and reorder the columns for the final output
+    final_csv_df = final_csv_df[csv_output_cols]
+
+    # Format the numeric columns
+    for col in final_csv_df.columns[4:]:
+        final_csv_df[col] = final_csv_df[col].round().astype(int)
+
+    final_csv_df.to_csv(output_gain_file, index=False)
     member_summary_df.to_csv(output_summary_file, index=False)
     
     print(f"\n--- Analysis Complete! ---")
