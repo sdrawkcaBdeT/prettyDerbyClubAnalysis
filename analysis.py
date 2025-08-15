@@ -74,6 +74,41 @@ def format_time_diff(minutes):
     else:
         return f"{mins}m"
 
+def summarize_log_data(df, is_club_log=False):
+    """
+    Summarizes log data into 8-hour windows to improve readability.
+    """
+    if df.empty:
+        return df
+
+    # Create the 8-hour time group for bucketing.
+    df['time_group'] = df['timestamp'].dt.floor('8h')
+
+    grouping_cols = ['inGameName', 'time_group'] if not is_club_log else ['time_group']
+
+    # Define the aggregation rules. We will capture the 'last' timestamp
+    # to represent the end of activity in that window.
+    aggregation_rules = {
+        'fanGain': 'sum',
+        'timeDiffMinutes': 'sum',
+        'timestamp': 'last' # Get the actual timestamp of the last event in the window
+    }
+
+    if not is_club_log:
+        aggregation_rules['fanCount'] = 'last'
+        aggregation_rules['monthlyFansPerMinute'] = 'mean'
+
+    summarized_df = df.groupby(grouping_cols).agg(aggregation_rules).reset_index()
+
+    # --- CORRECTED LOGIC ---
+    # We drop the 'time_group' column because the 'timestamp' column
+    # now correctly holds the time of the last update for that period.
+    # This resolves the unique column error and provides the log generator
+    # with the correct timestamp to calculate 'Time Since'.
+    summarized_df.drop(columns=['time_group'], inplace=True)
+
+    return summarized_df
+
 def generate_visualizations(summary_df, individual_log_df, club_log_df, contribution_df, historical_df, last_updated_str, generated_str, start_date, end_date):
     """Creates and saves all the requested charts and logs."""
     print("\n--- 3. Generating Visualizations ---")
@@ -591,7 +626,23 @@ def main():
     print("  - Historical data prepared.")
 
     # --- Generate all outputs ---
-    generate_visualizations(member_summary_df, individual_log_df, club_log_df, contribution_df, historical_df, last_updated_str, generated_str, start_date, end_date)
+    # --- Summarize logs for readability before generating images ---
+    print("  - Summarizing log data into 8-hour windows for report generation...")
+    summarized_individual_log_df = summarize_log_data(individual_log_df, is_club_log=False)
+    summarized_club_log_df = summarize_log_data(club_log_df, is_club_log=True)
+
+    # --- Generate all outputs ---
+    generate_visualizations(
+        member_summary_df,
+        summarized_individual_log_df,  # Use summarized data
+        summarized_club_log_df,      # Use summarized data
+        contribution_df,
+        historical_df,
+        last_updated_str,
+        generated_str,
+        start_date,
+        end_date
+    )
     if not member_summary_df.empty and not individual_log_df.empty:
         generate_member_summary(member_summary_df, individual_log_df, start_date, end_date, generated_str)
 
