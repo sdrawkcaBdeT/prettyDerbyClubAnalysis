@@ -152,10 +152,6 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, contribu
     # Club Pacing Chart
     if not individual_log_df.empty:
         generate_club_pacing_chart(individual_log_df, last_updated_str, generated_str)
-
-    # Member Cumulative Gain Chart
-    if not individual_log_df.empty and not summary_df.empty:
-        generate_member_area_chart(individual_log_df, summary_df, last_updated_str, generated_str)
     
     # --- NEW: Generate Historical Tables ---
     if not historical_df.empty:
@@ -266,7 +262,8 @@ def generate_performance_heatmap(historical_df, summary_df, filename, generated_
     club_total = historical_df.groupby('time_group')['fanGain'].sum()
     rank_groups = historical_df.groupby(['time_group', 'Rank Group'], observed=True)['fanGain'].sum().unstack()
     data_to_plot = pd.concat([pd.DataFrame({'Club': club_total}), rank_groups], axis=1).T.fillna(0)
-
+    
+    
     # --- NEW: Pacing Calculations ---
     cumulative_gain_before = club_total.cumsum().shift(1).fillna(0)
     time_since_start_before = (club_total.index - start_date).total_seconds() / 3600
@@ -282,6 +279,11 @@ def generate_performance_heatmap(historical_df, summary_df, filename, generated_
     projected_eom_gain = (cumulative_rate_through * total_month_hours).rename("End-of-Month Proj.")
     
     data_to_plot = pd.concat([data_to_plot, pd.DataFrame(projected_window_gain).T, pd.DataFrame(projected_eom_gain).T])
+    
+    # Select only the last 13 columns (time periods) for the plot
+    if len(data_to_plot.columns) > 13:
+        data_to_plot = data_to_plot.iloc[:, -13:]
+
     
     # --- Rendering ---
     formatted_data = data_to_plot.map(lambda x: f"{x/1000:,.0f}")
@@ -409,65 +411,6 @@ def generate_club_pacing_chart(analysis_df, last_updated_str, generated_str):
     plt.close(fig)
     print("  - Saved club_pacing_chart.png")
 
-
-def generate_member_area_chart(analysis_df, summary_df, last_updated_str, generated_str):
-    """Generates the new stacked area chart with 6-hour intervals and percentage annotations."""
-    print("  - Generating member cumulative gain chart by rank group...")
-    
-    summary_df = summary_df.sort_values('totalMonthlyGain', ascending=False).copy()
-    summary_df['rank'] = range(1, len(summary_df) + 1)
-    
-    ranked_analysis_df = pd.merge(analysis_df, summary_df[['inGameName', 'rank']], on='inGameName')
-    
-    ranked_analysis_df['time_group'] = ranked_analysis_df['timestamp'].dt.floor('6h')
-
-    bins = [0, 5, 10, 15, 20, 25, 30, np.inf]
-    labels = ['Ranks 1-5', 'Ranks 6-10', 'Ranks 11-15', 'Ranks 16-20', 'Ranks 21-25', 'Ranks 26-30', 'Ranks 31+']
-    ranked_analysis_df['Rank Group'] = pd.cut(ranked_analysis_df['rank'], bins=bins, labels=labels, right=True)
-
-    pivot_df = ranked_analysis_df.pivot_table(index='time_group', columns='Rank Group', values='fanGain', aggfunc='sum').fillna(0)
-    
-    cumulative_df = pivot_df.cumsum()
-    
-    if pivot_df.empty:
-        print("    - Skipping member area chart: No data to plot.")
-        return
-        
-    total_per_interval = cumulative_df.sum(axis=1)
-    percentage_df = cumulative_df.divide(total_per_interval, axis=0).fillna(0) * 100
-
-    fig, ax = plt.subplots(figsize=(16, 10))
-    colors = plt.cm.get_cmap('tab10', len(pivot_df.columns))
-    
-    pivot_df.plot.area(ax=ax, stacked=True, color=colors.colors, linewidth=0.5, legend=False)
-    
-    y_previous = np.zeros(len(cumulative_df.index))
-    for i, col in enumerate(cumulative_df.columns):
-        y_values = cumulative_df[col].values
-        y_centers = y_previous + (y_values - y_previous) / 2
-        percentages = percentage_df[col].values
-
-        for j, (x, y, p) in enumerate(zip(cumulative_df.index, y_centers, percentages)):
-             if p > 1:
-                ax.text(x, y, f'{p:.0f}%', ha='center', va='center', fontsize=14, color='white', weight='bold', path_effects=[pe.withStroke(linewidth=3, foreground='black')])
-        
-        y_previous = y_values
-
-    plt.title('Cumulative Fan Gain by Member Rank Group (6-Hour Intervals)', fontsize=16, weight='bold')
-    plt.xlabel('Date', fontsize=12)
-    plt.ylabel('Cumulative Fans Gained', fontsize=12)
-    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
-    
-    ax.yaxis.set_major_formatter(lambda x, pos: f'{x/1000000:.1f}M')
-    
-    handles, labels = ax.get_legend_handles_labels()
-    ax.legend(handles, pivot_df.columns, title='Rank Groups', bbox_to_anchor=(1.02, 1), loc='upper left')
-    
-    plt.tight_layout(pad=1.5)
-    add_timestamps_to_fig(fig, generated_str)
-    plt.savefig(os.path.join(OUTPUT_DIR, 'member_cumulative_gain.png'))
-    plt.close(fig)
-    print("  - Saved member_cumulative_gain.png")
 
 
 def generate_log_image(log_data, title, filename, generated_str, limit=25, is_club_log=False, rank=None, cumulative=False):
