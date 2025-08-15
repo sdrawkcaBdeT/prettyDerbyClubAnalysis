@@ -445,7 +445,9 @@ def main():
     try:
         members_df = pd.read_csv(MEMBERS_CSV)
         fanlog_df = pd.read_csv(FANLOG_CSV)
-        print(f"Successfully loaded {len(members_df)} members and {len(fanlog_df)} log entries.")
+        # --- NEW: Load ranks for prestige calculation ---
+        ranks_df = pd.read_csv('ranks.csv')
+        print(f"Successfully loaded {len(members_df)} members, {len(fanlog_df)} log entries, and {len(ranks_df)} ranks.")
     except FileNotFoundError as e:
         print(f"FATAL ERROR: {e}. Script cannot continue.")
         return
@@ -454,28 +456,24 @@ def main():
     fanlog_df['fanCount'] = pd.to_numeric(fanlog_df['fanCount'].astype(str).str.replace(',', '', regex=False), errors='coerce')
     fanlog_df['timestamp'] = pd.to_datetime(fanlog_df['timestamp'], errors='coerce')
     fanlog_df.dropna(subset=['fanCount', 'timestamp'], inplace=True)
-    
+
     central_tz = pytz.timezone('US/Central')
     fanlog_df['timestamp'] = fanlog_df['timestamp'].dt.tz_localize(central_tz)
-    
+
     print(f"Found {len(fanlog_df)} valid log entries after cleaning.")
-    
+
     # --- Timestamp Generation ---
     generation_ct = datetime.now(central_tz)
-    
     start_date, end_date = get_club_month_window(generation_ct)
-    
     last_updated_ct = fanlog_df['timestamp'].max()
-    
     last_updated_str = last_updated_ct.strftime('%Y-%m-%d %I:%M %p %Z')
     generated_str = generation_ct.strftime('%Y-%m-%d %I:%M %p %Z')
     print(f"  - Last data collected: {last_updated_str}")
     print(f"  - Report generated:    {generated_str}")
 
     print("\n--- 2. Performing Core Analysis ---")
-    
+
     monthly_fan_log = fanlog_df[(fanlog_df['timestamp'] >= start_date) & (fanlog_df['timestamp'] <= end_date)].copy()
-    
     monthly_fan_log = monthly_fan_log.sort_values(by=['inGameName', 'timestamp'])
 
     # --- Calculations for INDIVIDUAL LOGS (Projections) ---
@@ -487,12 +485,9 @@ def main():
     time_diff = (monthly_fan_log['timestamp'] - monthly_fan_log['previousTimestamp']).dt.total_seconds()
     monthly_fan_log['timeDiffMinutes'] = (time_diff / 60).fillna(0)
 
-    # Note: Projections in logs are now based on current period Fan/Hr, so long-term calculations are only for summary.
-    
     individual_log_df = monthly_fan_log.copy()
     print("  - Individual projection analysis complete.")
-    
-    # --- NEW: Calculate Cumulative Monthly Pacing ---
+
     individual_log_df['firstTimestampMonth'] = individual_log_df.groupby('inGameName')['timestamp'].transform('first')
     individual_log_df['cumulativeGainMonth'] = individual_log_df.groupby('inGameName')['fanGain'].cumsum()
     time_elapsed_month = (individual_log_df['timestamp'] - individual_log_df['firstTimestampMonth']).dt.total_seconds() / 60
@@ -502,10 +497,48 @@ def main():
     club_events = monthly_fan_log.groupby('timestamp').agg(fanGain=('fanGain', 'sum')).reset_index()
     club_events = club_events.sort_values('timestamp', ascending=True)
     club_events['timeDiffMinutes'] = (club_events['timestamp'].diff().dt.total_seconds() / 60).values
-    
+
     club_log_df = club_events.copy()
     print("  - Club projection analysis complete.")
 
+    # --- NEW: Prestige System Calculations ---
+    print("  - Calculating prestige points...")
+    individual_log_df = individual_log_df.sort_values(by=['inGameName', 'timestamp'])
+    
+    # Calculate daily fan gain rate before dividing for prestige
+    daily_fan_gain_rate = (individual_log_df['fanGain'] / individual_log_df['timeDiffMinutes']) * 1440
+    
+    individual_log_df['performancePrestigePoints'] = daily_fan_gain_rate / 8333
+    individual_log_df['tenurePrestigePoints'] = 20 * (individual_log_df['timeDiffMinutes'] / 1440)
+    
+    individual_log_df[['performancePrestigePoints', 'tenurePrestigePoints']] = individual_log_df[['performancePrestigePoints', 'tenurePrestigePoints']].fillna(0)
+    
+    individual_log_df['totalPerformancePrestige'] = individual_log_df.groupby('inGameName')['performancePrestigePoints'].cumsum()
+    individual_log_df['totalTenurePrestige'] = individual_log_df.groupby('inGameName')['tenurePrestigePoints'].cumsum()
+    individual_log_df['cumulativePrestige'] = individual_log_df['totalPerformancePrestige'] + individual_log_df['totalTenurePrestige']
+    
+    # --- Load Ranks and Map to Members ---
+    ranks_df_sorted = ranks_df.sort_values('prestige_required', ascending=False)
+    
+    def get_rank_details(cumulative_prestige):
+        for _, rank_row in ranks_df_sorted.iterrows():
+            if cumulative_prestige >= rank_row['prestige_required']:
+                return rank_row['rank_name']
+        return "Unranked"
+    
+    individual_log_df['prestigeRank'] = individual_log_df['cumulativePrestige'].apply(get_rank_details)
+    
+    # Create a mapping from rank name to required prestige for the next rank
+    next_rank_req = ranks_df.set_index('rank_name')['prestige_required'].shift(-1).to_dict()
+    
+    def get_points_to_next_rank(row):
+        current_rank = row['prestigeRank']
+        if current_rank in next_rank_req:
+            return next_rank_req[current_rank] - row['cumulativePrestige']
+        return np.nan # No next rank
+        
+    individual_log_df['pointsToNextRank'] = individual_log_df.apply(get_points_to_next_rank, axis=1)
+    
     # --- Calculations for Member Summary Table ---
     report_date = generation_ct
     active_members_df = members_df[members_df['status'].isin(['Active', 'Pending'])].copy()
@@ -514,11 +547,11 @@ def main():
     for _, member in active_members_df.iterrows():
         name = member['inGameName']
         member_logs = individual_log_df[individual_log_df['inGameName'] == name]
-        
+
         if not member_logs.empty:
             latest_update = member_logs['timestamp'].max()
             days_since_update = (report_date - latest_update).days
-            
+
             total_monthly_gain = member_logs['fanGain'].sum()
 
             non_first_entries = member_logs[~member_logs['is_first_entry']]
@@ -534,11 +567,11 @@ def main():
 
     member_summary_df = pd.DataFrame(summary_list)
     print("  - Member summary table complete.")
-    
+
     # --- Calculations for Fan Contribution Chart ---
     summary_with_ranks = member_summary_df.sort_values('totalMonthlyGain', ascending=False).copy()
     summary_with_ranks['rank'] = range(1, len(summary_with_ranks) + 1)
-    
+
     bins = [0, 6, 12, 18, 24, 30]
     labels = ['Ranks 1-6', 'Ranks 7-12', 'Ranks 13-18', 'Ranks 19-24', 'Ranks 25-30']
     summary_with_ranks['Rank Group'] = pd.cut(summary_with_ranks['rank'], bins=bins, labels=labels, right=True)
@@ -556,33 +589,40 @@ def main():
     historical_df = monthly_fan_log.copy()
     historical_df['time_group'] = historical_df['timestamp'].dt.floor('8h')
     print("  - Historical data prepared.")
-    
+
     # --- Generate all outputs ---
     generate_visualizations(member_summary_df, individual_log_df, club_log_df, contribution_df, historical_df, last_updated_str, generated_str, start_date, end_date)
-    # Generate Member Performance Summary
     if not member_summary_df.empty and not individual_log_df.empty:
         generate_member_summary(member_summary_df, individual_log_df, start_date, end_date, generated_str)
 
     output_gain_file = os.path.join(OUTPUT_DIR, 'fanGainAnalysis_output.csv')
     output_summary_file = os.path.join(OUTPUT_DIR, 'memberSummary_output.csv')
     
+    # --- MODIFIED: Added prestige columns to the final output ---
     csv_output_cols = [
-        'timestamp', 'memberID', 'inGameName', 'fanCount', 'fanGain', 
-        'timeDiffMinutes'
+        'timestamp', 'memberID', 'inGameName', 'fanCount', 'fanGain',
+        'timeDiffMinutes', 'performancePrestigePoints', 'tenurePrestigePoints',
+        'cumulativePrestige', 'prestigeRank', 'pointsToNextRank'
     ]
-    # Merge with members_df to get the memberID back
+    
     final_csv_df = pd.merge(individual_log_df, members_df[['inGameName', 'memberID']], on='inGameName', how='left')
-
-    # Select and reorder the columns for the final output
     final_csv_df = final_csv_df[csv_output_cols]
 
-    # Format the numeric columns
-    for col in final_csv_df.columns[4:]:
-        final_csv_df[col] = final_csv_df[col].round().astype(int)
+    # Format numeric columns for cleaner output
+    numeric_cols_to_format = ['fanGain', 'timeDiffMinutes', 'performancePrestigePoints', 'tenurePrestigePoints', 'cumulativePrestige', 'pointsToNextRank']
+    for col in numeric_cols_to_format:
+        # Check if the column exists before formatting
+        if col in final_csv_df.columns:
+            final_csv_df[col] = pd.to_numeric(final_csv_df[col], errors='coerce').fillna(0)
+            if col in ['fanGain', 'timeDiffMinutes']:
+                 final_csv_df[col] = final_csv_df[col].astype(int)
+            else: # Keep decimals for prestige points
+                 final_csv_df[col] = final_csv_df[col].round(2)
+
 
     final_csv_df.to_csv(output_gain_file, index=False)
     member_summary_df.to_csv(output_summary_file, index=False)
-    
+
     print(f"\n--- Analysis Complete! ---")
     print(f"All reports have been saved to the '{OUTPUT_DIR}' folder.")
 
