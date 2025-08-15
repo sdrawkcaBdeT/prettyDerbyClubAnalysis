@@ -250,8 +250,8 @@ def generate_prestige_leaderboard(individual_log_df, last_updated_str, generated
         next_rank_req = next_rank_info['prestige_required']
         
         ax.axvline(x=next_rank_req, color='yellow', linestyle='--', linewidth=2)
-        ax.text(next_rank_req, -0.9, f"Next Rank: {next_rank_name}\n({next_rank_req:,} Pts)", 
-                color='yellow', ha='center', va='bottom', fontsize=10, weight='bold')
+        ax.text(next_rank_req, -0.9, f"Next Rank:\n {next_rank_name} ({next_rank_req:,} Pts)", 
+                color='yellow', ha='right', va='bottom', fontsize=10, weight='bold')
 
     plt.tight_layout(rect=[0.01, 0.01, 0.99, 0.95])
     add_timestamps_to_fig(fig, generated_str)
@@ -483,7 +483,7 @@ def generate_log_image(log_data, title, filename, generated_str, limit=25, is_cl
     ax.set_facecolor('#2E2E2E')
     
     if rank:
-        ax.text(0.99, 1.0, f"RANK {rank}", color='#FFD700', fontsize=14,transform=ax.transAxes, ha='right', va='bottom', fontproperties=rankfont)
+        ax.text(1.075, 1.0, f"RANK {rank}", color='#FFD700', fontsize=14,transform=ax.transAxes, ha='right', va='bottom', fontproperties=rankfont)
 
     ax.set_title(title, color='white', loc='left', pad=20, fontproperties=rankfont, fontsize=16)
     
@@ -493,7 +493,7 @@ def generate_log_image(log_data, title, filename, generated_str, limit=25, is_cl
         total_prestige = full_latest_entry['cumulativePrestige']
         points_to_next = full_latest_entry['pointsToNextRank']
         
-        header_y = 0.95
+        header_y = 0.99
         ax.text(0.01, header_y, "Prestige Rank:", color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top')
         ax.text(0.15, header_y, prestige_rank, color='white', fontsize=12, transform=ax.transAxes, va='top')
         
@@ -512,9 +512,9 @@ def generate_log_image(log_data, title, filename, generated_str, limit=25, is_cl
     if is_club_log:
         ax.text(0.78, 0.99, 'Values in Millions', color='white', fontsize=10, weight='bold', transform=ax.transAxes, ha='center', fontproperties=myfont)
     for i, header in enumerate(headers):
-        ax.text(header_positions[i], 0.85, header, color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top', ha='left' if i < 2 else 'center')
+        ax.text(header_positions[i], 0.915, header, color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top', ha='left' if i < 2 else 'center')
 
-    y_pos = 0.80
+    y_pos = 0.89
     for _, row in log_data_limited.iterrows():
         hour = row['timestamp'].strftime('%I').lstrip('0') or '12'
         timestamp_str = f"{hour}:{row['timestamp'].strftime('%M %p %m/%d/%Y')}"
@@ -563,7 +563,7 @@ def generate_log_image(log_data, title, filename, generated_str, limit=25, is_cl
     add_timestamps_to_fig(fig, generated_str)
     
     ax.axis('off')
-    plt.savefig(os.path.join(OUTPUT_DIR, filename), bbox_inches='tight', pad_inches=0.3, facecolor=fig.get_facecolor())
+    plt.savefig(os.path.join(OUTPUT_DIR,"individual_logs", filename), bbox_inches='tight', pad_inches=0.3, facecolor=fig.get_facecolor())
     plt.close(fig)
 
 def main():
@@ -714,14 +714,16 @@ def main():
     print("  - Historical data prepared.")
 
     # --- Generate all outputs ---
-    print("  - Summarizing log data for report generation...")
+    # --- Summarize logs for readability before generating images ---
+    print("  - Summarizing log data into 8-hour windows for report generation...")
+    summarized_individual_log_df = summarize_log_data(individual_log_df, is_club_log=False)
     summarized_club_log_df = summarize_log_data(club_log_df, is_club_log=True)
-    
-    # --- MODIFICATION: Pass the full individual_log_df to visualizations ---
+
+    # --- Generate all outputs ---
     generate_visualizations(
         member_summary_df,
-        individual_log_df,  # Use the full, unsummarized data
-        summarized_club_log_df,
+        summarized_individual_log_df,  # Use summarized data
+        summarized_club_log_df,      # Use summarized data
         contribution_df,
         historical_df,
         last_updated_str,
