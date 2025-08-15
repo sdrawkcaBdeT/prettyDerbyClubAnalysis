@@ -97,6 +97,11 @@ def summarize_log_data(df, is_club_log=False):
     if not is_club_log:
         aggregation_rules['fanCount'] = 'last'
         aggregation_rules['monthlyFansPerMinute'] = 'mean'
+        # --- FIX: Keep prestige columns when summarizing ---
+        aggregation_rules['cumulativePrestige'] = 'last'
+        aggregation_rules['prestigeRank'] = 'last'
+        aggregation_rules['pointsToNextRank'] = 'last'
+
 
     summarized_df = df.groupby(grouping_cols).agg(aggregation_rules).reset_index()
 
@@ -114,6 +119,10 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, contribu
     print("\n--- 3. Generating Visualizations ---")
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
+
+    # --- NEW: Generate Prestige Leaderboard ---
+    if not individual_log_df.empty:
+        generate_prestige_leaderboard(individual_log_df, last_updated_str, generated_str)
 
     # Monthly Leaderboard
     if not summary_df.empty:
@@ -169,7 +178,7 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, contribu
             if not member_data.empty:
                 safe_member_name = member_name.replace(' ', '_').replace('/', '').replace('\\', '')
                 filename = f"log_{safe_member_name}.png"
-                generate_log_image(member_data, f"Update Log: {member_name}   |   Updated {last_updated_str}", filename, generated_str, limit=25, is_club_log=False, rank=rank)
+                generate_log_image(member_data, f"Personal Performance Report: {member_name}", filename, generated_str, limit=15, is_club_log=False, rank=rank)
         print(f"  - Saved individual update logs for {len(all_members)} members.")
         
     # --- NEW: Generate Cumulative Pacing Logs ---
@@ -189,6 +198,67 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, contribu
     if not historical_df.empty:
         generate_performance_heatmap(historical_df, summary_df, "fan_performance_heatmap.png", generated_str, last_updated_str, start_date, end_date)
         
+
+def generate_prestige_leaderboard(individual_log_df, last_updated_str, generated_str):
+    """Creates and saves the prestige leaderboard chart with custom styling."""
+    print("  - Generating prestige_leaderboard.png")
+
+    # --- 1. Data Preparation ---
+    latest_prestige = individual_log_df.loc[individual_log_df.groupby('inGameName')['timestamp'].idxmax()]
+    top_15 = latest_prestige.nlargest(30, 'cumulativePrestige').sort_values('cumulativePrestige', ascending=True)
+
+    # --- 2. Custom Color Mapping ---
+    rank_colors = {
+        "Local Newcomer": "#ebd3b4", "Track Regular": "#f6bf83", "Podium Finisher": "#ec9130",
+        "Stakes Contender": "#7c95e0", "Derby Winner": "#446bdf", "Grand Prix Champion": "#0833b4",
+        "Grand Cup Holder": "#a7e296", "Champion Cup Holder": "#8ef172", "Triple Crown Winner": "#37e606",
+        "Hall of Fame Inductee": "#e4d00a", "Racing Legend": "#9c27b0", "The Founder's Idol": "#db1616"
+    }
+    bar_colors = top_15['prestigeRank'].map(rank_colors).fillna('grey')
+
+    # --- 3. Chart Styling ---
+    fig, ax = plt.subplots(figsize=(12, 10))
+    fig.patch.set_facecolor('#2E2E2E')
+    ax.set_facecolor('#2E2E2E')
+
+    bars = ax.barh(
+        y=[f"{name} ({rank})" for name, rank in zip(top_15['inGameName'], top_15['prestigeRank'])],
+        width=top_15['cumulativePrestige'],
+        color=bar_colors
+    )
+    
+    ax.bar_label(bars, labels=[f"{int(p):,}" for p in top_15['cumulativePrestige']], padding=5, color='white', fontsize=11, weight='bold')
+    
+    ax.set_xlabel('Total Prestige Points', fontsize=12, color='white')
+    ax.set_ylabel('Member', fontsize=12, color='white')
+    ax.set_title(f'Prestige Leaderboard | Updated: {last_updated_str}', fontsize=18, weight='bold', loc='left', color='white')
+
+    ax.tick_params(axis='x', colors='white')
+    ax.tick_params(axis='y', colors='white', labelsize=11)
+    
+    ax.grid(axis='x', linestyle='--', alpha=0.5)
+    ax.grid(axis='y', linestyle='', alpha=0)
+    
+    # --- 4. Next Rank Line ---
+    ranks_df = pd.read_csv('ranks.csv')
+    highest_rank_on_chart = top_15['prestigeRank'].iloc[-1]
+    
+    current_rank_index = ranks_df[ranks_df['rank_name'] == highest_rank_on_chart].index
+    if not current_rank_index.empty and current_rank_index[0] + 1 < len(ranks_df):
+        next_rank_info = ranks_df.iloc[current_rank_index[0] + 1]
+        next_rank_name = next_rank_info['rank_name']
+        next_rank_req = next_rank_info['prestige_required']
+        
+        ax.axvline(x=next_rank_req, color='yellow', linestyle='--', linewidth=2)
+        ax.text(next_rank_req, -0.9, f"Next Rank: {next_rank_name}\n({next_rank_req:,} Pts)", 
+                color='yellow', ha='center', va='bottom', fontsize=10, weight='bold')
+
+    plt.tight_layout(rect=[0.01, 0.01, 0.99, 0.95])
+    add_timestamps_to_fig(fig, generated_str)
+    plt.savefig(os.path.join(OUTPUT_DIR, 'prestige_leaderboard.png'), facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print("  - Saved prestige_leaderboard.png")
+
 
 def generate_member_summary(summary_df, individual_log_df, start_date, end_date, generated_str):
     """Generates a summary table of member performance as both a CSV and a styled image."""
@@ -402,11 +472,13 @@ def generate_contribution_chart(contribution_df, last_updated_str, generated_str
 def generate_log_image(log_data, title, filename, generated_str, limit=25, is_club_log=False, rank=None, cumulative=False):
     """Generates and saves a CML-style log as an image from pre-processed data."""
     
+    # --- MODIFICATION: Use full data for header, summarized for log table ---
+    full_latest_entry = log_data.loc[log_data['timestamp'].idxmax()]
     log_data_limited = log_data.sort_values('timestamp', ascending=False).head(limit)
-
+    
     if log_data_limited.empty: return
 
-    fig, ax = plt.subplots(figsize=(12, 8))
+    fig, ax = plt.subplots(figsize=(12, 10))
     fig.patch.set_facecolor('#2E2E2E')
     ax.set_facecolor('#2E2E2E')
     
@@ -415,14 +487,34 @@ def generate_log_image(log_data, title, filename, generated_str, limit=25, is_cl
 
     ax.set_title(title, color='white', loc='left', pad=20, fontproperties=rankfont, fontsize=16)
     
+    # --- NEW: Prestige Header ---
+    if not is_club_log:
+        prestige_rank = full_latest_entry['prestigeRank']
+        total_prestige = full_latest_entry['cumulativePrestige']
+        points_to_next = full_latest_entry['pointsToNextRank']
+        
+        header_y = 0.95
+        ax.text(0.01, header_y, "Prestige Rank:", color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top')
+        ax.text(0.15, header_y, prestige_rank, color='white', fontsize=12, transform=ax.transAxes, va='top')
+        
+        ax.text(0.40, header_y, "Total Prestige:", color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top')
+        ax.text(0.55, header_y, f"{total_prestige:,.0f} Prestige", color='white', fontsize=12, transform=ax.transAxes, va='top')
+        
+        ax.text(0.75, header_y, "Next Rank:", color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top')
+        if pd.notna(points_to_next):
+             ax.text(0.88, header_y, f"{points_to_next:,.0f} Points", color='white', fontsize=12, transform=ax.transAxes, va='top')
+        else:
+             ax.text(0.88, header_y, "Max Rank", color='white', fontsize=12, transform=ax.transAxes, va='top')
+
+    
     headers = ['Timestamp', 'Time Since', 'Fan Gain', 'Fan/Hr', '12h', '24h', '3d', '7d', 'Month-End']
     header_positions = [0.01, 0.22, 0.36, 0.47, 0.58, 0.68, 0.78, 0.88, 0.98]
     if is_club_log:
         ax.text(0.78, 0.99, 'Values in Millions', color='white', fontsize=10, weight='bold', transform=ax.transAxes, ha='center', fontproperties=myfont)
     for i, header in enumerate(headers):
-        ax.text(header_positions[i], 0.97, header, color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top', ha='left' if i < 2 else 'center')
+        ax.text(header_positions[i], 0.85, header, color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top', ha='left' if i < 2 else 'center')
 
-    y_pos = 0.92
+    y_pos = 0.80
     for _, row in log_data_limited.iterrows():
         hour = row['timestamp'].strftime('%I').lstrip('0') or '12'
         timestamp_str = f"{hour}:{row['timestamp'].strftime('%M %p %m/%d/%Y')}"
@@ -480,7 +572,6 @@ def main():
     try:
         members_df = pd.read_csv(MEMBERS_CSV)
         fanlog_df = pd.read_csv(FANLOG_CSV)
-        # --- NEW: Load ranks for prestige calculation ---
         ranks_df = pd.read_csv('ranks.csv')
         print(f"Successfully loaded {len(members_df)} members, {len(fanlog_df)} log entries, and {len(ranks_df)} ranks.")
     except FileNotFoundError as e:
@@ -540,10 +631,9 @@ def main():
     print("  - Calculating prestige points...")
     individual_log_df = individual_log_df.sort_values(by=['inGameName', 'timestamp'])
     
-    # Calculate daily fan gain rate before dividing for prestige
     daily_fan_gain_rate = (individual_log_df['fanGain'] / individual_log_df['timeDiffMinutes']) * 1440
     
-    individual_log_df['performancePrestigePoints'] = daily_fan_gain_rate / 8333
+    individual_log_df['performancePrestigePoints'] = individual_log_df['fanGain'] / 8333
     individual_log_df['tenurePrestigePoints'] = 20 * (individual_log_df['timeDiffMinutes'] / 1440)
     
     individual_log_df[['performancePrestigePoints', 'tenurePrestigePoints']] = individual_log_df[['performancePrestigePoints', 'tenurePrestigePoints']].fillna(0)
@@ -552,7 +642,6 @@ def main():
     individual_log_df['totalTenurePrestige'] = individual_log_df.groupby('inGameName')['tenurePrestigePoints'].cumsum()
     individual_log_df['cumulativePrestige'] = individual_log_df['totalPerformancePrestige'] + individual_log_df['totalTenurePrestige']
     
-    # --- Load Ranks and Map to Members ---
     ranks_df_sorted = ranks_df.sort_values('prestige_required', ascending=False)
     
     def get_rank_details(cumulative_prestige):
@@ -563,14 +652,13 @@ def main():
     
     individual_log_df['prestigeRank'] = individual_log_df['cumulativePrestige'].apply(get_rank_details)
     
-    # Create a mapping from rank name to required prestige for the next rank
     next_rank_req = ranks_df.set_index('rank_name')['prestige_required'].shift(-1).to_dict()
     
     def get_points_to_next_rank(row):
         current_rank = row['prestigeRank']
         if current_rank in next_rank_req:
             return next_rank_req[current_rank] - row['cumulativePrestige']
-        return np.nan # No next rank
+        return np.nan
         
     individual_log_df['pointsToNextRank'] = individual_log_df.apply(get_points_to_next_rank, axis=1)
     
@@ -626,16 +714,14 @@ def main():
     print("  - Historical data prepared.")
 
     # --- Generate all outputs ---
-    # --- Summarize logs for readability before generating images ---
-    print("  - Summarizing log data into 8-hour windows for report generation...")
-    summarized_individual_log_df = summarize_log_data(individual_log_df, is_club_log=False)
+    print("  - Summarizing log data for report generation...")
     summarized_club_log_df = summarize_log_data(club_log_df, is_club_log=True)
-
-    # --- Generate all outputs ---
+    
+    # --- MODIFICATION: Pass the full individual_log_df to visualizations ---
     generate_visualizations(
         member_summary_df,
-        summarized_individual_log_df,  # Use summarized data
-        summarized_club_log_df,      # Use summarized data
+        individual_log_df,  # Use the full, unsummarized data
+        summarized_club_log_df,
         contribution_df,
         historical_df,
         last_updated_str,
@@ -643,13 +729,13 @@ def main():
         start_date,
         end_date
     )
+
     if not member_summary_df.empty and not individual_log_df.empty:
         generate_member_summary(member_summary_df, individual_log_df, start_date, end_date, generated_str)
 
     output_gain_file = os.path.join(OUTPUT_DIR, 'fanGainAnalysis_output.csv')
     output_summary_file = os.path.join(OUTPUT_DIR, 'memberSummary_output.csv')
     
-    # --- MODIFIED: Added prestige columns to the final output ---
     csv_output_cols = [
         'timestamp', 'memberID', 'inGameName', 'fanCount', 'fanGain',
         'timeDiffMinutes', 'performancePrestigePoints', 'tenurePrestigePoints',
@@ -659,17 +745,14 @@ def main():
     final_csv_df = pd.merge(individual_log_df, members_df[['inGameName', 'memberID']], on='inGameName', how='left')
     final_csv_df = final_csv_df[csv_output_cols]
 
-    # Format numeric columns for cleaner output
     numeric_cols_to_format = ['fanGain', 'timeDiffMinutes', 'performancePrestigePoints', 'tenurePrestigePoints', 'cumulativePrestige', 'pointsToNextRank']
     for col in numeric_cols_to_format:
-        # Check if the column exists before formatting
         if col in final_csv_df.columns:
             final_csv_df[col] = pd.to_numeric(final_csv_df[col], errors='coerce').fillna(0)
             if col in ['fanGain', 'timeDiffMinutes']:
                  final_csv_df[col] = final_csv_df[col].astype(int)
-            else: # Keep decimals for prestige points
+            else:
                  final_csv_df[col] = final_csv_df[col].round(2)
-
 
     final_csv_df.to_csv(output_gain_file, index=False)
     member_summary_df.to_csv(output_summary_file, index=False)
