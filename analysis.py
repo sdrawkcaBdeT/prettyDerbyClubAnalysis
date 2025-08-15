@@ -149,9 +149,6 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, contribu
             generate_log_image(member_data, f"Cumulative Pacing: {member_name}   |   Updated {last_updated_str}", filename, generated_str, limit=25, is_club_log=False, rank=rank, cumulative=True)
     print(f"  - Saved CUMULATIVE individual update logs for {len(all_members)} members.")
     
-    # Club Pacing Chart
-    if not individual_log_df.empty:
-        generate_club_pacing_chart(individual_log_df, last_updated_str, generated_str)
     
     # --- NEW: Generate Historical Tables ---
     if not historical_df.empty:
@@ -365,52 +362,6 @@ def generate_contribution_chart(contribution_df, last_updated_str, generated_str
     plt.savefig(os.path.join(OUTPUT_DIR, 'fan_contribution_by_rank.png'))
     plt.close(fig)
     print("  - Saved fan_contribution_by_rank.png")
-
-def generate_club_pacing_chart(analysis_df, last_updated_str, generated_str):
-    """Generates the cumulative club gain chart with pacing projection."""
-    print("  - Generating club pacing chart...")
-    monthly_data = analysis_df.copy()
-    if monthly_data.empty:
-        print("    - Skipping pacing chart: No data for the current month.")
-        return
-
-    cumulative_gain = monthly_data.groupby(monthly_data['timestamp'].dt.date)['fanGain'].sum().cumsum()
-    
-    first_day = cumulative_gain.index.min()
-    last_day = cumulative_gain.index.max()
-    days_elapsed = (last_day - first_day).days + 1
-    total_gain_so_far = cumulative_gain.iloc[-1]
-    daily_rate = total_gain_so_far / days_elapsed if days_elapsed > 0 else 0
-
-    today = datetime.now().date()
-    end_of_month = pd.to_datetime(today).to_period('M').end_time.date()
-    days_remaining = (end_of_month - last_day).days
-    
-    projected_gain = total_gain_so_far + (daily_rate * days_remaining)
-    
-    projection_dates = pd.to_datetime([last_day, end_of_month])
-    projection_values = [total_gain_so_far, projected_gain]
-
-    fig, ax = plt.subplots(figsize=(12, 7))
-    ax.plot(cumulative_gain.index, cumulative_gain.values, marker='o', linestyle='-', label='Actual Club Gain')
-    ax.plot(projection_dates, projection_values, marker='', linestyle='--', color='red', label='Projected Pace')
-    
-    plt.title('Club Cumulative Fan Gain and Monthly Projection', fontsize=16, weight='bold')
-    plt.xlabel('Date', fontsize=12)
-    plt.ylabel('Cumulative Fans Gained', fontsize=12)
-    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
-    plt.legend()
-    
-    plt.text(projection_dates[-1], projection_values[-1], f' {int(projected_gain/1000):,}K', color='red', va='center')
-    
-    ax.yaxis.set_major_formatter(lambda x, pos: f'{int(x/1000):,}K')
-    plt.xticks(rotation=45)
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    add_timestamps_to_fig(fig, generated_str)
-    plt.savefig(os.path.join(OUTPUT_DIR, 'club_pacing_chart.png'))
-    plt.close(fig)
-    print("  - Saved club_pacing_chart.png")
-
 
 
 def generate_log_image(log_data, title, filename, generated_str, limit=25, is_club_log=False, rank=None, cumulative=False):
