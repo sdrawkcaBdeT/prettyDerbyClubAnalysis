@@ -148,7 +148,10 @@ Club_Report_Output/individual_logs/log_WaveofGratitude.png
 Club_Report_Output/individual_logs/log_Wither.png
 Club_Report_Output/individual_logs/log_Yuto.png
 .env
+<<<<<<< HEAD
 command_log.csv
 progress_log.csv
 user_registrations.csv
 dataGet/data/error_images/115_202508162155_Twice_fans.png
+=======
+>>>>>>> 67396c1 (discord bot)
