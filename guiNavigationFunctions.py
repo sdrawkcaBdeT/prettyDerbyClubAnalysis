@@ -13,6 +13,11 @@ def clickClub():
     pyautogui.moveTo(x=400, y=1240)
     pyautogui.click()
     time.sleep(5) # wait for page to load
+    
+def harmlessClick():
+    pyautogui.moveTo(x=420, y=820)
+    pyautogui.click()
+    time.sleep(0.5) # wait for page to load
 
 # "Club" page actions
 

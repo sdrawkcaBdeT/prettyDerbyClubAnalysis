@@ -8,7 +8,7 @@ import cv2
 import csv
 import pytz
 from datetime import datetime
-from guiNavigationFunctions import clickClub, clickClubMenu, clickClubInfo, clickClubMemberArea, scrollDown, clickHome, clickClubMenuClose, clickClubInfoClose
+from guiNavigationFunctions import clickClub, clickClubMenu, clickClubInfo, clickClubMemberArea, scrollDown, clickHome, clickClubMenuClose, clickClubInfoClose, harmlessClick
 
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
@@ -104,6 +104,20 @@ def extract_data_from_png(image_path):
 
 # 1. Navigate to the Club Member Screen
 print("--- 1. Navigating to Club Member Screen ---")
+# In case we're in a weird state (day restart), do a 12x harmless click first
+harmlessClick()
+harmlessClick()
+harmlessClick()
+harmlessClick()
+harmlessClick()
+harmlessClick()
+harmlessClick()
+harmlessClick()
+harmlessClick()
+harmlessClick()
+harmlessClick()
+harmlessClick()
+
 clickClub()
 clickClubMenu()
 clickClubInfo()
