@@ -149,9 +149,22 @@ Club_Report_Output/individual_logs/log_Wither.png
 Club_Report_Output/individual_logs/log_Yuto.png
 .env
 <<<<<<< HEAD
+<<<<<<< HEAD
 command_log.csv
 progress_log.csv
 user_registrations.csv
 dataGet/data/error_images/115_202508162155_Twice_fans.png
 =======
 >>>>>>> 67396c1 (discord bot)
+=======
+command_log.csv
+data_validation_errors.csv
+fan_log.csv
+progress_log.csv
+user_registrations.csv
+dataGet/data/scan_id.csv
+dataGet/data/error_images/115_202508162155_Twice_fans.png
+data_validation_errors.csv
+fan_log.csv
+dataGet/data/scan_id.csv
+>>>>>>> becad88 (gitignore)
