@@ -212,7 +212,7 @@ async def update_ranks_task():
             print(f"Promoted {member.name} to {correct_role.name}")
             promo_channel = discord.utils.get(guild.channels, name=PROMOTION_CHANNEL_NAME)
             if promo_channel:
-                await promo_channel.send(f"🎉 **RANK UP!** Congratulations {member.mention}, you have achieved the rank of **{correct_role.name}**! �")
+                await promo_channel.send(f"🎉 **RANK UP!** Congratulations {member.mention}, you have achieved the rank of **{correct_role.name}**! ")
 
         for old_role in member_prestige_roles:
             if old_role != correct_role:
@@ -328,7 +328,12 @@ async def myprogress(ctx):
     time_since_last_check = current_time_utc - last_checked_timestamp_utc
 
     progress_period_df = user_analysis_df[user_analysis_df['timestamp'] > last_checked_timestamp]
-    before_stats = user_analysis_df[user_analysis_df['timestamp'] <= last_checked_timestamp].iloc[-1]
+    
+    if not progress_period_df.empty:
+        before_stats = user_analysis_df[user_analysis_df['timestamp'] <= last_checked_timestamp].iloc[-1]
+    else:
+        before_stats = user_analysis_df.iloc[-1]
+
     after_stats = user_analysis_df.iloc[-1]
 
     fans_gained = progress_period_df['fanGain'].sum()

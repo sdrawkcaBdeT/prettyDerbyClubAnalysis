@@ -663,8 +663,8 @@ def main():
     print("  - Club daily summary aggregation complete.")
 
     # --- Calculations for Member Summary Table (uses latest from individual_log_df)---
-    member_summary_df = pd.DataFrame(individual_log_df.loc[individual_log_df.groupby('inGameName')['timestamp'].idxmax()])
-    member_summary_df['totalMonthlyGain'] = member_summary_df.groupby('inGameName')['fanGain'].cumsum()
+    member_summary_df = daily_summary_df.loc[daily_summary_df.groupby('inGameName')['timestamp'].idxmax()].copy()
+    member_summary_df.rename(columns={'monthlyFanGain': 'totalMonthlyGain'}, inplace=True)
     
     # --- Calculations for Fan Contribution Chart ---
     summary_with_ranks = member_summary_df.sort_values('totalMonthlyGain', ascending=False).copy()
@@ -718,7 +718,7 @@ def main():
     csv_output_cols = [
         'timestamp', 'memberID', 'inGameName', 'fanCount', 'fanGain',
         'timeDiffMinutes', 'performancePrestigePoints', 'tenurePrestigePoints',
-        'cumulativePrestige', 'rank' # Added rank
+        'cumulativePrestige', 'prestigeRank', 'pointsToNextRank', 'rank' 
     ]
     
     final_csv_df = final_csv_df[csv_output_cols]
