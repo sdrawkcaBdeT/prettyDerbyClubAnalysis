@@ -464,7 +464,7 @@ def generate_log_image(log_data, title, filename, generated_str, limit=15, is_cl
     plt.savefig(os.path.join(OUTPUT_DIR, "individual_logs", filename), bbox_inches='tight', pad_inches=0.3, facecolor=fig.get_facecolor())
     plt.close(fig)
 
-def create_all_visuals(summary_df, individual_log_df, club_log_df, contribution_df, historical_df, last_updated_str, generated_str, start_date, end_date, daily_summary_df):
+def create_all_visuals(members_df, summary_df, individual_log_df, club_log_df, contribution_df, historical_df, last_updated_str, generated_str, start_date, end_date, daily_summary_df):
     """
     Main function to create and save all visualizations.
     This function is called by analysis.py after the main data processing is complete.
@@ -484,19 +484,22 @@ def create_all_visuals(summary_df, individual_log_df, club_log_df, contribution_
         daily_summary_df
     )
 
-    if not member_summary_df.empty and not individual_log_df.empty:
-        generate_member_summary(member_summary_df, individual_log_df, start_date, end_date, generated_str)
+    if not summary_df.empty and not individual_log_df.empty:
+        generate_member_summary(summary_df, individual_log_df, start_date, end_date, generated_str)
+
+        print("  - Generating final CSV reports...")
 
     output_gain_file = os.path.join(OUTPUT_DIR, 'fanGainAnalysis_output.csv')
     output_summary_file = os.path.join(OUTPUT_DIR, 'memberSummary_output.csv')
     
-    # --- This part needs to be updated to join with ranks and other details if needed ---
+    # Merge with memberID for the detailed fan gain output
     final_csv_df = pd.merge(individual_log_df, members_df[['inGameName', 'memberID']], on='inGameName', how='left')
     
-    # --- Adding rank details to the final CSV output ---
+    # Merge with the latest rank for each member
     latest_ranks = daily_summary_df.loc[daily_summary_df.groupby('inGameName')['timestamp'].idxmax()][['inGameName', 'rank']]
     final_csv_df = pd.merge(final_csv_df, latest_ranks, on='inGameName', how='left')
     
+    # Define and order the columns for the final output
     csv_output_cols = [
         'timestamp', 'memberID', 'inGameName', 'fanCount', 'fanGain',
         'timeDiffMinutes', 'performancePrestigePoints', 'tenurePrestigePoints',
@@ -505,6 +508,7 @@ def create_all_visuals(summary_df, individual_log_df, club_log_df, contribution_
     
     final_csv_df = final_csv_df[csv_output_cols]
 
+    # Format numeric columns for clarity
     numeric_cols_to_format = ['fanGain', 'timeDiffMinutes', 'performancePrestigePoints', 'tenurePrestigePoints', 'cumulativePrestige']
     for col in numeric_cols_to_format:
         if col in final_csv_df.columns:
@@ -514,5 +518,9 @@ def create_all_visuals(summary_df, individual_log_df, club_log_df, contribution_
             else:
                  final_csv_df[col] = final_csv_df[col].round(2)
 
+    # Save the final CSV files
     final_csv_df.to_csv(output_gain_file, index=False)
-    member_summary_df.to_csv(output_summary_file, index=False)
+    summary_df.to_csv(output_summary_file, index=False)
+    
+    print(f"  - Saved {output_gain_file}")
+    print(f"  - Saved {output_summary_file}")

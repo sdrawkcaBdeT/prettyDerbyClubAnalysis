@@ -254,16 +254,18 @@ def main():
     # --- Generate all outputs ---
     print("\n--- 4. Calling Visualization Script ---")
     generate_visuals.create_all_visuals(
-        member_summary_df,
-        individual_log_df,
-        daily_club_summary_df,
-        contribution_df,
-        historical_df,
-        last_updated_str,
-        generated_str,
-        start_date,
-        end_date,
-        daily_summary_df
+        # Add the missing dataframe and use consistent names
+        members_df=members_df,
+        summary_df=member_summary_df,
+        individual_log_df=individual_log_df,
+        club_log_df=daily_club_summary_df,
+        contribution_df=contribution_df,
+        historical_df=historical_df,
+        last_updated_str=last_updated_str,
+        generated_str=generated_str,
+        start_date=start_date,
+        end_date=end_date,
+        daily_summary_df=daily_summary_df
     )
 
     
