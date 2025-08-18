@@ -140,7 +140,7 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, contribu
             if not member_data.empty:
                 safe_member_name = member_name.replace(' ', '_').replace('/', '').replace('\\', '')
                 filename = f"log_cumulative_{safe_member_name}.png"
-                generate_log_image(member_data, f"Daily Performance Summary: {member_name}", filename, generated_str, limit=15, is_club_log=False)
+                generate_log_image(member_data, f"Daily Performance Summary: {member_name} | Updated: {last_updated_str}", filename, generated_str, limit=15, is_club_log=False)
         print(f"  - Saved DAILY SUMMARY logs for {len(all_members)} members.")
     
     # --- MODIFIED: Historical Tables ---
