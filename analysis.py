@@ -427,24 +427,45 @@ def generate_log_image(log_data, title, filename, generated_str, limit=15, is_cl
     fig, ax = plt.subplots(figsize=(16, 10))
     fig.patch.set_facecolor('#2E2E2E')
     ax.set_facecolor('#2E2E2E')
+    ax.set_title(title, color='white', loc='left', pad=20, fontproperties=rankfont, fontsize=16)
 
-    # --- MODIFIED: Use the correct header for the club log ---
+    latest_entry = log_data_limited.iloc[0] # Get the most recent day's data for the header
+
+    # --- START: Add Prestige Header back ---
+    if not is_club_log:
+        rank = latest_entry.get('rank')
+        if pd.notna(rank):
+            ax.text(1, 1.025, f"RANK {int(rank)}", color='#FFD700', fontsize=14, transform=ax.transAxes, ha='right', va='bottom', fontproperties=rankfont)
+
+        prestige_rank = latest_entry['prestigeRank']
+        total_prestige = latest_entry['cumulativePrestige']
+        points_to_next = latest_entry['pointsToNextRank']
+        
+        header_y = 1.015
+        ax.text(0.01, header_y, "Prestige Rank:", color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top')
+        ax.text(0.11, header_y, prestige_rank, color='white', fontsize=12, transform=ax.transAxes, va='top')
+        
+        ax.text(0.36, header_y, "Total Prestige:", color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top')
+        ax.text(0.47, header_y, f"{total_prestige:,.0f} Prestige", color='white', fontsize=12, transform=ax.transAxes, va='top')
+        
+        ax.text(0.71, header_y, "Next Rank:", color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top')
+        if pd.notna(points_to_next):
+             ax.text(0.80, header_y, f"{points_to_next:,.0f} Points", color='white', fontsize=12, transform=ax.transAxes, va='top')
+        else:
+             ax.text(0.80, header_y, "Max Rank", color='white', fontsize=12, transform=ax.transAxes, va='top')
+    # --- END: Add Prestige Header back ---
+    
     if is_club_log:
         headers = ['Timestamp (CT)', "Day's Fan Gain", "Month's Fans", 'Rank', 'Rank Δ', 'Fans to Rank 100', 'Month Pacing', 'Prestige Gain']
     else:
         headers = ['Timestamp (CT)', "Day's Fan Gain", "Month's Fans", 'Rank', 'Rank Δ', 'Fans to Next Rank', 'Month Pacing', 'Prestige Gain']
-        latest_entry = log_data_limited.iloc[0]
-        rank = latest_entry.get('rank')
-        if pd.notna(rank):
-            ax.text(1.0, 1.0, f"RANK {int(rank)}", color='#FFD700', fontsize=14, transform=ax.transAxes, ha='right', va='bottom', fontproperties=rankfont)
-
-    ax.set_title(title, color='white', loc='left', pad=20, fontproperties=rankfont, fontsize=16)
-    header_positions = [0.01, 0.22, 0.36, 0.48, 0.56, 0.65, 0.78, 0.90]
+        
+    header_positions = [0.01, 0.22, 0.36, 0.45, 0.53, 0.65, 0.78, 0.90]
 
     for i, header in enumerate(headers):
-        ax.text(header_positions[i], 0.915, header, color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top', ha='left' if i < 1 else 'center')
+        ax.text(header_positions[i], 0.935, header, color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top', ha='left' if i < 1 else 'center')
 
-    y_pos = 0.89
+    y_pos = 0.91
     for _, row in log_data_limited.iterrows():
         hour = row['timestamp'].strftime('%I').lstrip('0') or '12'
         timestamp_str = f"{hour}:{row['timestamp'].strftime('%M %p %m/%d/%Y')}"
@@ -453,7 +474,6 @@ def generate_log_image(log_data, title, filename, generated_str, limit=15, is_cl
         gain_color = '#4CAF50' if gain_val > 0 else '#BDBDBD'
         month_fans_str = f"{int(row['monthlyFanGain']):,}"
         
-        # --- START: CORRECTED LOGIC for placeholders ---
         rank_str = f"#{int(row['rank'])}" if isinstance(row['rank'], (int, float)) and pd.notna(row['rank']) else '-'
         rank_delta = row['rank_delta']
         if pd.isna(rank_delta) or rank_delta == 0 or isinstance(rank_delta, str):
@@ -468,7 +488,6 @@ def generate_log_image(log_data, title, filename, generated_str, limit=15, is_cl
             fans_next_str = '-'
         else:
             fans_next_str = f"{int(fans_to_next/1000):,}K"
-        # --- END: CORRECTED LOGIC ---
 
         pacing_str = f"{int(row['monthPacing']/1000):,}K"
         prestige_gain_str = f"+{row['dailyPrestigeGain']:.1f}"
@@ -532,6 +551,7 @@ def main():
     monthly_fan_log['fanGain'].fillna(0, inplace=True)
     
     individual_log_df = monthly_fan_log.copy() # We still need this for some calculations
+    
     # --- Prestige Calculations ---
     individual_log_df['timeDiffMinutes'] = monthly_fan_log.groupby('inGameName')['timestamp'].diff().dt.total_seconds() / 60
     individual_log_df['timeDiffMinutes'].fillna(0, inplace=True)
@@ -539,15 +559,24 @@ def main():
     individual_log_df['tenurePrestigePoints'] = 20 * (individual_log_df['timeDiffMinutes'] / 1440)
     individual_log_df['prestigeGain'] = individual_log_df['performancePrestigePoints'] + individual_log_df['tenurePrestigePoints']
     individual_log_df['cumulativePrestige'] = individual_log_df.groupby('inGameName')['prestigeGain'].cumsum()
+
+    # This block calculates the rank name based on prestige points
     ranks_df_sorted = ranks_df.sort_values('prestige_required', ascending=False)
-    
     def get_rank_details(cumulative_prestige):
         for _, rank_row in ranks_df_sorted.iterrows():
             if cumulative_prestige >= rank_row['prestige_required']:
                 return rank_row['rank_name']
         return "Unranked"
-    
     individual_log_df['prestigeRank'] = individual_log_df['cumulativePrestige'].apply(get_rank_details)
+
+    # This block calculates the points needed for the next rank
+    next_rank_req = ranks_df.set_index('rank_name')['prestige_required'].shift(-1).to_dict()
+    def get_points_to_next_rank(row):
+        current_rank = row['prestigeRank']
+        if current_rank in next_rank_req and pd.notna(next_rank_req[current_rank]):
+            return next_rank_req[current_rank] - row['cumulativePrestige']
+        return np.nan
+    individual_log_df['pointsToNextRank'] = individual_log_df.apply(get_points_to_next_rank, axis=1)
     
         # --- NEW: Daily Summary Aggregation Logic ---
     print("  - Aggregating data into daily summaries...")
@@ -560,36 +589,38 @@ def main():
     daily_summary_df = individual_log_df.groupby(['inGameName', 'date']).agg(
         dailyFanGain=('fanGain', 'sum'),
         dailyPrestigeGain=('prestigeGain', 'sum'),
-        timestamp=('timestamp', 'last') # Get the timestamp of the last event of the day
+        timestamp=('timestamp', 'last')
     ).reset_index()
 
-    # 2. Calculate ACCURATE cumulative monthly fan gain from the daily sums.
+    # 2. Merge the latest prestige info for each day from the main log.
+    prestige_info = individual_log_df.loc[individual_log_df.groupby(['inGameName', 'date'])['timestamp'].idxmax()][
+        ['inGameName', 'date', 'cumulativePrestige', 'prestigeRank', 'pointsToNextRank']
+    ]
+    daily_summary_df = pd.merge(daily_summary_df, prestige_info, on=['inGameName', 'date'])
+
+    # 3. Calculate ACCURATE cumulative monthly fan gain from the daily sums.
     daily_summary_df = daily_summary_df.sort_values(by=['inGameName', 'date'])
     daily_summary_df['monthlyFanGain'] = daily_summary_df.groupby('inGameName')['dailyFanGain'].cumsum()
 
-    # 3. Now, calculate ranks based on the correct monthly fan gain.
+    # 4. Now, calculate ranks based on the correct monthly fan gain.
     daily_summary_df['rank'] = daily_summary_df.groupby('date')['monthlyFanGain'].rank(method='dense', ascending=False)
 
-    # 4. Calculate Rank Delta (change from the previous day).
+    # 5. Calculate Rank Delta (change from the previous day).
     daily_summary_df['previous_rank'] = daily_summary_df.groupby('inGameName')['rank'].shift(1)
     daily_summary_df['rank_delta'] = daily_summary_df['previous_rank'] - daily_summary_df['rank']
 
-    # 5. Calculate Fans to Next Rank.
+    # 6. Calculate Fans to Next Rank.
     def get_fans_to_next(df):
         df = df.sort_values('rank')
         df['next_rank_fans'] = df['monthlyFanGain'].shift(1)
         df['fansToNextRank'] = df['next_rank_fans'] - df['monthlyFanGain'] + 1
         return df
-
     daily_summary_df = daily_summary_df.groupby('date', group_keys=False).apply(get_fans_to_next)
 
-    # 6. Calculate Month Pacing.
+    # 7. Calculate Month Pacing.
     time_elapsed_hrs = (daily_summary_df['timestamp'] - start_date).dt.total_seconds() / 3600
     time_remaining_hrs = (end_date - daily_summary_df['timestamp']).dt.total_seconds() / 3600
-
-    # Calculate fans_per_hour, handling potential division by zero
     fans_per_hour = (daily_summary_df['monthlyFanGain'] / time_elapsed_hrs).replace([np.inf, -np.inf], 0).fillna(0)
-
     daily_summary_df['monthPacing'] = daily_summary_df['monthlyFanGain'] + (fans_per_hour * time_remaining_hrs)
 
     print("  - Daily summary aggregation complete.")
