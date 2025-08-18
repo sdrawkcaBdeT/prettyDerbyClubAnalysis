@@ -7,6 +7,7 @@ import pytz
 import pandas as pd
 import re
 from dotenv import load_dotenv
+from analysis import get_club_month_window # We need this helper function
 
 # --- Configuration ---
 COMMAND_LOG_CSV = 'command_log.csv'
@@ -17,8 +18,7 @@ INDIVIDUAL_LOGS_DIR = os.path.join(OUTPUT_DIR, 'individual_logs')
 FAN_LOG_CSV = 'fan_log.csv'
 MEMBERS_CSV = 'members.csv'
 RANKS_CSV = 'ranks.csv'
-ANALYSIS_OUTPUT_CSV = os.path.join(OUTPUT_DIR, 'fanGainAnalysis_output.csv')
-MEMBER_SUMMARY_CSV = os.path.join(OUTPUT_DIR, 'member_performance_summary.csv')
+ENRICHED_FAN_LOG_CSV = 'enriched_fan_log.csv'
 
 SCOREBOARD_CHANNEL_NAME = 'the-scoreboard'
 PROMOTION_CHANNEL_NAME = 'the-scoreboard' 
@@ -177,14 +177,17 @@ async def update_ranks_task():
 
     try:
         registrations_df = pd.read_csv(USER_REGISTRATIONS_CSV)
-        analysis_df = pd.read_csv(ANALYSIS_OUTPUT_CSV)
+        enriched_df = pd.read_csv(ENRICHED_FAN_LOG_CSV)
         all_prestige_roles = get_all_prestige_roles(guild)
     except FileNotFoundError as e:
         print(f"Error loading data for rank update: {e}")
         return
 
-    latest_stats = analysis_df.loc[analysis_df.groupby('inGameName')['timestamp'].idxmax()]
-    
+    # Convert timestamp to datetime for correct sorting
+    enriched_df['timestamp'] = pd.to_datetime(enriched_df['timestamp'])
+    # Find the latest entry for each player from the enriched log
+    latest_stats = enriched_df.loc[enriched_df.groupby('inGameName')['timestamp'].idxmax()]
+        
     registrations_df.rename(columns={'in_game_name': 'inGameName'}, inplace=True)
     merged_df = pd.merge(latest_stats, registrations_df, on='inGameName')
 
@@ -303,9 +306,8 @@ async def myprogress(ctx):
     
     try:
         ranks_df = pd.read_csv(RANKS_CSV)
-        analysis_df = pd.read_csv(ANALYSIS_OUTPUT_CSV)
-        analysis_df['timestamp'] = pd.to_datetime(analysis_df['timestamp'])
-        summary_df = pd.read_csv(MEMBER_SUMMARY_CSV)
+        enriched_df = pd.read_csv(ENRICHED_FAN_LOG_CSV)
+        enriched_df['timestamp'] = pd.to_datetime(enriched_df['timestamp'])
         
         if os.path.exists(PROGRESS_LOG_CSV):
             progress_df = pd.read_csv(PROGRESS_LOG_CSV)
@@ -315,7 +317,7 @@ async def myprogress(ctx):
         await ctx.send(f"Sorry, I'm missing a required data file (`{e.filename}`). Please run the analysis first.", ephemeral=True)
         return
 
-    user_analysis_df = analysis_df[analysis_df['inGameName'] == in_game_name].sort_values('timestamp')
+    user_analysis_df = enriched_df[enriched_df['inGameName'] == in_game_name].sort_values('timestamp')
     if user_analysis_df.empty:
         await ctx.send("I couldn't find any analysis data for you yet.", ephemeral=True)
         return
@@ -339,11 +341,31 @@ async def myprogress(ctx):
     fans_gained = progress_period_df['fanGain'].sum()
     prestige_gained = after_stats['cumulativePrestige'] - before_stats['cumulativePrestige']
     
-    rank_before = get_club_rank(analysis_df, last_checked_timestamp, in_game_name)
-    rank_after = get_club_rank(analysis_df, after_stats['timestamp'], in_game_name)
+    rank_before = get_club_rank(enriched_df, last_checked_timestamp, in_game_name)
+    rank_after = get_club_rank(enriched_df, after_stats['timestamp'], in_game_name)
     rank_change = (rank_before - rank_after) if rank_before and rank_after else 0
     
-    eom_projection = summary_df[summary_df['inGameName'] == in_game_name].iloc[0]['month_end_proj']
+    # --- Re-implement EOM Projection Calculation ---    
+    # Get the start and end dates of the current club month
+    start_date, end_date = get_club_month_window(datetime.now(pytz.timezone('US/Central')))
+    
+    # Filter the user's logs for the current month
+    user_monthly_logs = user_analysis_df[(user_analysis_df['timestamp'] >= start_date) & (user_analysis_df['timestamp'] <= end_date)]
+    
+    if not user_monthly_logs.empty:
+        first_log = user_monthly_logs.iloc[0]
+        latest_log = user_monthly_logs.iloc[-1]
+        
+        fan_contribution = latest_log['fanCount'] - first_log['fanCount']
+        
+        hrs_elapsed = (latest_log['timestamp'] - first_log['timestamp']).total_seconds() / 3600
+        fans_per_hour = fan_contribution / hrs_elapsed if hrs_elapsed > 0 else 0
+        
+        hrs_remaining = (end_date - latest_log['timestamp']).total_seconds() / 3600
+        
+        eom_projection = fan_contribution + (fans_per_hour * hrs_remaining)
+    else:
+        eom_projection = 0
 
     time_ago_str = format_timedelta_ddhhmm(time_since_last_check)
     fans_line = f"**Fans:** You've earned **{fans_gained:,.0f}** fans. Your end-of-month projection is **{eom_projection:,.0f}**."
