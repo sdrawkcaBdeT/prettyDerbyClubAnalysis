@@ -7,11 +7,13 @@ from datetime import datetime, timedelta
 scripts = {
     "collect": ["dataGet.py"],
     "analyze": ["analysis.py"],
+    "visualize": ["generate_visuals.py"],
+    
     "talking_points": ["generate_talking_points.py"],
     
     # --- Sequences ---
     # Runs the full data collection and analysis pipeline
-    "full_run": ["dataGet.py", "validate_data.py", "analysis.py"],
+    "full_run": ["dataGet.py", "validate_data.py", "analysis.py", "generate_visuals.py"],
 }
 
 def wait_for_scheduled_start():

@@ -524,3 +524,143 @@ def create_all_visuals(members_df, summary_df, individual_log_df, club_log_df, c
     
     print(f"  - Saved {output_gain_file}")
     print(f"  - Saved {output_summary_file}")
+
+def get_club_month_window(run_time_ct):
+    """Calculates the start and end of the current in-game ranking period."""
+    start_date = run_time_ct.replace(day=1, hour=10, minute=0, second=0, microsecond=0)
+    
+    if run_time_ct.month == 12:
+        end_date = start_date.replace(year=start_date.year + 1, month=1, hour=4, minute=59, second=59)
+    else:
+        end_date = start_date.replace(month=start_date.month + 1, hour=4, minute=59, second=59)
+
+    if run_time_ct < start_date:
+        end_date = start_date.replace(hour=4, minute=59, second=59)
+        if start_date.month == 1:
+            start_date = start_date.replace(year=start_date.year - 1, month=12, hour=10, minute=0, second=0)
+        else:
+            start_date = start_date.replace(month=start_date.month - 1, hour=10, minute=0, second=0)
+
+    first_month_start = pytz.timezone('US/Central').localize(datetime(2025, 8, 8, 23, 45, 0))
+    if start_date.month == 8 and start_date.year == 2025:
+        start_date = first_month_start
+
+    return start_date, end_date
+# In generate_visuals.py
+
+def main():
+    """
+    Main function to load enriched data and generate all visual and CSV outputs.
+    This script is now independent and reads from the 'Golden Record'.
+    """
+    print("--- 1. Loading Data for Visualization ---")
+    try:
+        # Load the necessary source files
+        members_df = pd.read_csv('members.csv')
+        ranks_df = pd.read_csv('ranks.csv')
+        # Load our new "Golden Record"
+        individual_log_df = pd.read_csv('enriched_fan_log.csv')
+        # Convert timestamp columns back to datetime objects
+        individual_log_df['timestamp'] = pd.to_datetime(individual_log_df['timestamp'])
+        print("  - Successfully loaded enriched fan log and supporting files.")
+    except FileNotFoundError as e:
+        print(f"FATAL ERROR: Missing data file {e}. Cannot generate visuals.")
+        return
+
+    # --- 2. Re-creating Summary DataFrames ---
+    # This logic is moved from analysis.py
+    print("--- 2. Aggregating Data for Reports ---")
+    central_tz = pytz.timezone('US/Central')
+    generation_ct = datetime.now(central_tz)
+    start_date, end_date = get_club_month_window(generation_ct)
+    last_updated_ct = individual_log_df['timestamp'].max()
+    last_updated_str = last_updated_ct.strftime('%Y-%m-%d %I:%M %p %Z')
+    generated_str = generation_ct.strftime('%Y-%m-%d %I:%M %p %Z')
+
+    # Re-create daily_summary_df
+    daily_summary_df = individual_log_df.groupby(['inGameName', 'date']).agg(
+        dailyFanGain=('fanGain', 'sum'),
+        dailyPrestigeGain=('prestigeGain', 'sum'),
+        timestamp=('timestamp', 'last')
+    ).reset_index()
+    prestige_info = individual_log_df.loc[individual_log_df.groupby(['inGameName', 'date'])['timestamp'].idxmax()][
+        ['inGameName', 'date', 'cumulativePrestige', 'prestigeRank', 'pointsToNextRank']
+    ]
+    daily_summary_df = pd.merge(daily_summary_df, prestige_info, on=['inGameName', 'date'])
+    daily_summary_df['timestamp'] = pd.to_datetime(daily_summary_df['timestamp']) # Ensure datetime type
+    daily_summary_df = daily_summary_df.sort_values(by=['inGameName', 'date'])
+    daily_summary_df['monthlyFanGain'] = daily_summary_df.groupby('inGameName')['dailyFanGain'].cumsum()
+    daily_summary_df['rank'] = daily_summary_df.groupby('date')['monthlyFanGain'].rank(method='dense', ascending=False)
+    daily_summary_df['previous_rank'] = daily_summary_df.groupby('inGameName')['rank'].shift(1)
+    daily_summary_df['rank_delta'] = daily_summary_df['previous_rank'] - daily_summary_df['rank']
+    def get_fans_to_next(df):
+        df = df.sort_values('rank')
+        df['next_rank_fans'] = df['monthlyFanGain'].shift(1)
+        df['fansToNextRank'] = df['next_rank_fans'] - df['monthlyFanGain'] + 1
+        return df
+    daily_summary_df = daily_summary_df.groupby('date', group_keys=False).apply(get_fans_to_next)
+    time_elapsed_hrs = (daily_summary_df['timestamp'] - start_date).dt.total_seconds() / 3600
+    time_remaining_hrs = (end_date - daily_summary_df['timestamp']).dt.total_seconds() / 3600
+    fans_per_hour = (daily_summary_df['monthlyFanGain'] / time_elapsed_hrs).replace([np.inf, -np.inf], 0).fillna(0)
+    daily_summary_df['monthPacing'] = daily_summary_df['monthlyFanGain'] + (fans_per_hour * time_remaining_hrs)
+
+    # Re-create daily_club_summary_df
+    daily_club_summary_list = []
+    club_daily_groups = individual_log_df.groupby('date')
+    for date, group in club_daily_groups:
+        latest_entry = group.loc[group['timestamp'].idxmax()]
+        daily_fan_gain = group['fanGain'].sum()
+        daily_prestige_gain = group['prestigeGain'].sum()
+        club_month_to_date = individual_log_df[individual_log_df['date'] <= date]
+        monthly_fan_gain = club_month_to_date['fanGain'].sum()
+        time_elapsed_hrs = (latest_entry['timestamp'] - start_date).total_seconds() / 3600
+        time_remaining_hrs = (end_date - latest_entry['timestamp']).total_seconds() / 3600
+        fans_per_hour = monthly_fan_gain / time_elapsed_hrs if time_elapsed_hrs > 0 else 0
+        month_pacing = monthly_fan_gain + (fans_per_hour * time_remaining_hrs)
+        daily_club_summary_list.append({
+            'timestamp': latest_entry['timestamp'], 'inGameName': 'Club Total', 'dailyFanGain': daily_fan_gain,
+            'monthlyFanGain': monthly_fan_gain, 'rank': '-', 'rank_delta': '-', 'fansToNextRank': '-',
+            'monthPacing': month_pacing, 'dailyPrestigeGain': daily_prestige_gain
+        })
+    daily_club_summary_df = pd.DataFrame(daily_club_summary_list)
+
+    # Re-create summary_df (formerly member_summary_df)
+    summary_df = daily_summary_df.loc[daily_summary_df.groupby('inGameName')['timestamp'].idxmax()].copy()
+    summary_df.rename(columns={'monthlyFanGain': 'totalMonthlyGain'}, inplace=True)
+    
+    # Re-create contribution_df
+    summary_with_ranks = summary_df.sort_values('totalMonthlyGain', ascending=False).copy()
+    summary_with_ranks['rank'] = range(1, len(summary_with_ranks) + 1)
+    bins = [0, 6, 12, 18, 24, 30]
+    labels = ['Ranks 1-6', 'Ranks 7-12', 'Ranks 13-18', 'Ranks 19-24', 'Ranks 25-30']
+    summary_with_ranks['Rank Group'] = pd.cut(summary_with_ranks['rank'], bins=bins, labels=labels, right=True)
+    contribution_df = summary_with_ranks.groupby('Rank Group', observed=True)['totalMonthlyGain'].sum().reset_index()
+    total_club_gain = contribution_df['totalMonthlyGain'].sum()
+    contribution_df['percentage'] = (contribution_df['totalMonthlyGain'] / total_club_gain) * 100 if total_club_gain > 0 else 0
+    contribution_df = contribution_df.set_index('Rank Group')
+
+    # Re-create historical_df
+    historical_df = individual_log_df.copy() # Since we're only looking at the current month
+    historical_df['time_group'] = historical_df['timestamp'].dt.floor('8h')
+    print("  - All data successfully aggregated.")
+
+    # --- 3. Calling Visualization Function ---
+    print("--- 3. Generating Visuals and Reports ---")
+    create_all_visuals(
+        members_df=members_df,
+        summary_df=summary_df,
+        individual_log_df=individual_log_df,
+        club_log_df=daily_club_summary_df,
+        contribution_df=contribution_df,
+        historical_df=historical_df,
+        last_updated_str=last_updated_str,
+        generated_str=generated_str,
+        start_date=start_date,
+        end_date=end_date,
+        daily_summary_df=daily_summary_df
+    )
+    print("\n--- Visualization Complete! ---")
+
+
+if __name__ == "__main__":
+    main()
