@@ -141,6 +141,10 @@ def main():
         return np.nan
     individual_log_df['pointsToNextRank'] = individual_log_df.apply(get_points_to_next_rank, axis=1)
     
+    print("\n--- 3. Saving Enriched Fan Log ---")
+    individual_log_df.to_csv('enriched_fan_log.csv', index=False)
+    print("  - Successfully created enriched_fan_log.csv")
+    
         # --- NEW: Daily Summary Aggregation Logic ---
     print("  - Aggregating data into daily summaries...")
     daily_summary_list = []
