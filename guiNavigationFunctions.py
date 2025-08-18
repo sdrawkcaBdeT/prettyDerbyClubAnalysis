@@ -17,7 +17,7 @@ def clickClub():
 def harmlessClick():
     pyautogui.moveTo(x=420, y=820)
     pyautogui.click()
-    time.sleep(0.5) # wait for page to load
+    time.sleep(0.3) # wait for page to load
 
 # "Club" page actions
 
@@ -66,4 +66,4 @@ def scrollDown(ticks=1):
     """
     for _ in range(ticks):
         pyautogui.scroll(-1)  # Scroll down
-    time.sleep(0.3)
+    time.sleep(0.15)
