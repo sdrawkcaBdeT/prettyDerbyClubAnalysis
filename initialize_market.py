@@ -17,7 +17,7 @@ def initialize_market():
         'portfolios.csv': ['investor_discord_id', 'stock_in_game_name', 'shares_owned'],
         'shop_upgrades.csv': ['discord_id', 'upgrade_name', 'tier'],
         'market_events.csv': ['event_name', 'description', 'duration_hours', 'effect_type', 'effect_value'],
-        'member_initialization.csv': ['in_game_name', 'random_init_factor', 'status'],
+        'member_initialization.csv': ['in_game_name', 'random_init_factor', 'status', 'ticker'],
         # --- History & Log Files ---
         'stock_price_history.csv': ['timestamp', 'in_game_name', 'price'],
         'balance_history.csv': [
@@ -99,7 +99,8 @@ def initialize_market():
         member_init_records.append({
             'in_game_name': in_game_name,
             'random_init_factor': random_init_factor,
-            'status': 'active'
+            'status': 'active',
+            'ticker': None
         })
 
     crew_coins_df = pd.DataFrame(crew_coins_records)
