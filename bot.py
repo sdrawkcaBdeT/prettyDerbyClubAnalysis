@@ -165,6 +165,28 @@ def log_market_transaction(actor_id, transaction_type, target_id, item_name, ite
             timestamp, actor_id, transaction_type, target_id,
             item_name, item_quantity, cc_amount, fee_paid
         ])
+        
+def get_name_from_ticker_or_name(identifier: str):
+    """
+    Finds a member's full in_game_name from either their ticker or name.
+    Returns the in_game_name on success, or None on failure.
+    """
+    # First, try to find a match in the tickers
+    init_df = load_market_file('member_initialization.csv')
+    if not init_df.empty:
+        # Tickers are stored in uppercase, so we search in uppercase
+        ticker_match = init_df[init_df['ticker'].str.upper() == identifier.upper()]
+        if not ticker_match.empty:
+            return ticker_match.iloc[0]['in_game_name']
+            
+    # If no ticker match, try to find a direct name match (case-insensitive)
+    stock_prices_df = load_market_file('stock_prices.csv')
+    if not stock_prices_df.empty:
+        name_match = stock_prices_df[stock_prices_df['in_game_name'].str.lower() == identifier.lower()]
+        if not name_match.empty:
+            return name_match.iloc[0]['in_game_name']
+            
+    return None # Return None if no match is found
 
 # --- Events ---
 @bot.event
@@ -439,6 +461,63 @@ async def log(ctx, *, name: str):
 
 # --- Fan Exchange Commands ---
 
+@bot.command(name="set_ticker")
+async def set_ticker(ctx, ticker: str):
+    """Sets a permanent, unique stock ticker for your name (2-5 letters)."""
+    user_id = str(ctx.author.id)
+    in_game_name = get_in_game_name(ctx.author.id)
+
+    if not in_game_name:
+        await ctx.send("You must be registered with `/register` to set a ticker.", ephemeral=True)
+        return
+
+    # --- Validation ---
+    ticker = ticker.upper() # Tickers are always uppercase
+    if not (2 <= len(ticker) <= 5):
+        await ctx.send("Ticker must be between 2 and 5 letters.", ephemeral=True)
+        return
+    if not ticker.isalpha():
+        await ctx.send("Ticker can only contain letters (A-Z).", ephemeral=True)
+        return
+
+    # --- File Locking ---
+    lock_file = 'market/market.lock'
+    if os.path.exists(lock_file):
+        await ctx.send("The market is busy. Please try again in a moment.", ephemeral=True)
+        return
+    open(lock_file, 'w').close()
+
+    try:
+        init_df = load_market_file('member_initialization.csv')
+        if init_df.empty:
+            await ctx.send("Market initialization file not found. Please contact an admin.", ephemeral=True)
+            return
+
+        # Check if user already has a ticker
+        user_row = init_df[init_df['in_game_name'] == in_game_name]
+        if not user_row.empty and pd.notna(user_row.iloc[0]['ticker']):
+            await ctx.send(f"You have already set your ticker to **${user_row.iloc[0]['ticker']}**. It cannot be changed.", ephemeral=True)
+            return
+            
+        # Check if ticker is already in use
+        if ticker in init_df['ticker'].values:
+            await ctx.send(f"The ticker **${ticker}** is already taken. Please choose another.", ephemeral=True)
+            return
+
+        # --- Update and Save ---
+        init_df.loc[init_df['in_game_name'] == in_game_name, 'ticker'] = ticker
+        init_df.to_csv('market/member_initialization.csv', index=False)
+
+        embed = discord.Embed(
+            title="✅ Ticker Set Successfully!",
+            description=f"Your official stock ticker is now **${ticker}**.\nOther users can now use this ticker with the `/stock`, `/invest`, and `/sell` commands.",
+            color=discord.Color.purple()
+        )
+        await ctx.send(embed=embed)
+
+    finally:
+        os.remove(lock_file)
+
 @bot.command(name="portfolio")
 async def portfolio(ctx):
     """Displays the user's current CC balance and their stock holdings."""
@@ -524,7 +603,11 @@ async def stock(ctx, *, member: str):
     stock_prices_df = load_market_file('stock_prices.csv')
     history_df = load_market_file('stock_price_history.csv')
     
-    stock_info = stock_prices_df[stock_prices_df['in_game_name'].str.lower() == member.lower()]
+    target_name = get_name_from_ticker_or_name(member)
+    if not target_name:
+        await ctx.send(f"Could not find a stock for a member or ticker named '{member}'.", ephemeral=True)
+        return
+    stock_info = stock_prices_df[stock_prices_df['in_game_name'] == target_name]
     
     if stock_info.empty:
         await ctx.send(f"Could not find a stock for a member named '{member}'. Please check the spelling.", ephemeral=True)
@@ -619,7 +702,11 @@ async def invest(ctx, member: str, amount: str):
             return
 
         # --- Get Target Stock Info ---
-        target_stock = stock_prices_df[stock_prices_df['in_game_name'].str.lower() == member.lower()]
+        target_name = get_name_from_ticker_or_name(member)
+        if not target_name:
+            await ctx.send(f"Could not find a stock for a member or ticker named '{member}'.", ephemeral=True)
+            return
+        target_stock = stock_prices_df[stock_prices_df['in_game_name'] == target_name]
         if target_stock.empty:
             await ctx.send(f"Could not find a stock for '{member}'.", ephemeral=True)
             return
@@ -710,7 +797,11 @@ async def sell(ctx, member: str, shares_to_sell_str: str):
         portfolios_df = load_market_file('portfolios.csv', dtype={'investor_discord_id': str})
         
         # --- Get Target Stock Info ---
-        target_stock = stock_prices_df[stock_prices_df['in_game_name'].str.lower() == member.lower()]
+        target_name = get_name_from_ticker_or_name(member)
+        if not target_name:
+            await ctx.send(f"Could not find a stock for a member or ticker named '{member}'.", ephemeral=True)
+            return
+        target_stock = stock_prices_df[stock_prices_df['in_game_name'] == target_name]
         if target_stock.empty:
             await ctx.send(f"Could not find a stock for '{member}'.", ephemeral=True)
             return
