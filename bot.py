@@ -8,11 +8,13 @@ import pandas as pd
 import re
 from dotenv import load_dotenv
 from analysis import get_club_month_window # We need this helper function
+import matplotlib.pyplot as plt
+import io
 
 # --- Configuration ---
 COMMAND_LOG_CSV = 'command_log.csv'
 PROGRESS_LOG_CSV = 'progress_log.csv'
-USER_REGISTRATIONS_CSV = 'user_registrations.csv' # New file for linking users
+USER_REGISTRATIONS_CSV = 'user_registrations.csv'
 OUTPUT_DIR = 'Club_Report_Output'
 INDIVIDUAL_LOGS_DIR = os.path.join(OUTPUT_DIR, 'individual_logs')
 FAN_LOG_CSV = 'fan_log.csv'
@@ -127,21 +129,23 @@ def get_club_rank(df, target_timestamp, in_game_name):
     """Calculates the club rank for a specific member at a given time."""
     snapshot_df = df[df['timestamp'] <= target_timestamp].copy()
     if snapshot_df.empty: return None
-
-    # --- FIX: Calculate total monthly gain correctly before ranking ---
-    # First, calculate the cumulative sum of fan gains for each member over time
     snapshot_df['totalMonthlyGain'] = snapshot_df.groupby('inGameName')['fanGain'].cumsum()
-    
-    # Then, find the single latest entry for each member, which now contains their correct total gain
     latest_entries = snapshot_df.loc[snapshot_df.groupby('inGameName')['timestamp'].idxmax()]
-    
-    # Now, sort by the correct total monthly gain
     ranked_df = latest_entries.sort_values('totalMonthlyGain', ascending=False).reset_index()
-    # --- END FIX ---
-    
     member_rank_series = ranked_df[ranked_df['inGameName'] == in_game_name].index
-    
     return member_rank_series[0] + 1 if not member_rank_series.empty else None
+
+# --- NEW HELPER FUNCTIONS FOR MARKET ---
+def load_market_file(filename, dtype=None):
+    """Safely loads a CSV file from the market directory."""
+    try:
+        return pd.read_csv(f'market/{filename}', dtype=dtype)
+    except FileNotFoundError:
+        return pd.DataFrame()
+
+def format_cc(amount):
+    """Formats a number as a string with commas and 'CC'."""
+    return f"{int(amount):,} CC"
 
 
 # --- Events ---
@@ -228,41 +232,11 @@ async def update_ranks_task():
 async def help(ctx):
     """Displays a list of all available commands and their descriptions."""
     
-    # Create an Embed object for a clean, formatted message
-    embed = discord.Embed(
-        title="TRACKMASTER BOT Help",
-        description="Here are all the commands you can use to track your performance and prestige.",
-        color=discord.Color.blue() # You can change the color
-    )
-    
-    # Add a field for the one-time setup command
-    embed.add_field(
-        name="SETUP (Required)",
-        value="`/register [your-in-game-name]` - Links your Discord account to your exact in-game name. You must do this first!",
-        inline=False
-    )
-    
-    # Add a field for personal commands
-    embed.add_field(
-        name="PERSONAL STATS",
-        value="`/myprogress` - Get a personalized summary of your progress since you last checked.",
-        inline=False
-    )
-
-    # Add a field for public commands that show charts
-    embed.add_field(
-        name="CLUB CHARTS & REPORTS",
-        value=(
-            "`/top10` - Shows the current top 10 members by monthly fan gain.\n"
-            "`/prestige_leaderboard` - Displays the all-time prestige point leaderboard.\n"
-            "`/performance` - Posts the historical fan gain heatmap.\n"
-            "`/log [member_name]` - Gets the detailed performance log for any member."
-        ),
-        inline=False
-    )
-    
+    embed = discord.Embed(title="TRACKMASTER BOT Help", description="Here are all the commands you can use to track your performance and prestige.", color=discord.Color.blue())
+    embed.add_field(name="SETUP (Required)", value="`/register [your-in-game-name]` - Links your Discord account to your exact in-game name. You must do this first!", inline=False)
+    embed.add_field(name="PERSONAL STATS", value="`/myprogress` - Get a personalized summary of your progress since you last checked.", inline=False)
+    embed.add_field(name="CLUB CHARTS & REPORTS", value=("`/top10` - Shows the current top 10 members by monthly fan gain.\n" "`/prestige_leaderboard` - Displays the all-time prestige point leaderboard.\n" "`/performance` - Posts the historical fan gain heatmap.\n" "`/log [member_name]` - Gets the detailed performance log for any member."), inline=False)
     embed.set_footer(text="Remember to use the command prefix '/' before each command.")
-    
     await ctx.send(embed=embed, ephemeral=True)
 
 @bot.command()
@@ -444,6 +418,135 @@ async def log(ctx, *, name: str):
     else:
         message = f"Sorry {ctx.author.mention}, I couldn't find a cumulative log for a member named **{name}**."
         await send_to_scoreboard(ctx, message)
+
+# --- Fan Exchange Commands ---
+
+@bot.command(name="portfolio")
+async def portfolio(ctx):
+    """Displays the user's current CC balance and their stock holdings."""
+    user_id = str(ctx.author.id)
+
+    crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
+    portfolios_df = load_market_file('portfolios.csv', dtype={'investor_discord_id': str})
+
+    if crew_coins_df.empty:
+        await ctx.send("Market data is currently unavailable. Please try again later.", ephemeral=True)
+        return
+
+    user_coin_data = crew_coins_df[crew_coins_df['discord_id'] == user_id]
+    if user_coin_data.empty:
+        await ctx.send("You do not have a Fan Exchange account yet. Make sure you are registered with `/register`.", ephemeral=True)
+        return
+    
+    balance = user_coin_data['balance'].iloc[0]
+    in_game_name = user_coin_data['in_game_name'].iloc[0]
+
+    user_stocks = portfolios_df[portfolios_df['investor_discord_id'] == user_id]
+
+    embed = discord.Embed(
+        title=f"{ctx.author.display_name}'s Portfolio",
+        description=f"**In-Game Name:** {in_game_name}",
+        color=discord.Color.gold()
+    )
+    embed.add_field(name="💰 Crew Coins", value=format_cc(balance), inline=False)
+
+    if not user_stocks.empty:
+        stock_prices_df = load_market_file('stock_prices.csv')
+        if not stock_prices_df.empty:
+            stock_prices_df = stock_prices_df.set_index('in_game_name')
+            portfolio_value = 0
+            stock_display = ""
+            for _, stock in user_stocks.iterrows():
+                stock_name = stock['stock_in_game_name']
+                shares = stock['shares_owned']
+                try:
+                    current_price = stock_prices_df.loc[stock_name, 'current_price']
+                    value = shares * current_price
+                    portfolio_value += value
+                    stock_display += f"**{stock_name}**: {shares:,.2f} shares ({format_cc(value)})\n"
+                except KeyError:
+                    stock_display += f"**{stock_name}**: {shares:,.2f} shares (Price data unavailable)\n"
+            
+            embed.add_field(name="📈 Stock Holdings", value=stock_display, inline=False)
+            embed.set_footer(text=f"Total Portfolio Value: {format_cc(float(balance) + portfolio_value)}")
+    else:
+        embed.add_field(name="📈 Stock Holdings", value="You do not own any shares.", inline=False)
+
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="market")
+async def market(ctx):
+    """Displays the top 5 highest and lowest priced stocks."""
+    stock_prices_df = load_market_file('stock_prices.csv')
+    if stock_prices_df.empty or len(stock_prices_df) < 2:
+        await ctx.send("Market is currently closed or has insufficient data.", ephemeral=True)
+        return
+        
+    top_5 = stock_prices_df.sort_values(by='current_price', ascending=False).head(5)
+    bottom_5 = stock_prices_df.sort_values(by='current_price', ascending=True).head(5)
+
+    embed = discord.Embed(
+        title="Baggins Index Market Overview",
+        color=discord.Color.blue()
+    )
+    
+    top_str = "\n".join([f"**{row.in_game_name}**: {format_cc(row.current_price)}" for _, row in top_5.iterrows()])
+    bottom_str = "\n".join([f"**{row.in_game_name}**: {format_cc(row.current_price)}" for _, row in bottom_5.iterrows()])
+
+    embed.add_field(name="🔼 Top 5 Stocks by Price", value=top_str, inline=False)
+    embed.add_field(name="🔽 Bottom 5 Stocks by Price", value=bottom_str, inline=False)
+    
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="stock")
+async def stock(ctx, *, member: str):
+    """Displays detailed information and a price chart for a given stock."""
+    stock_prices_df = load_market_file('stock_prices.csv')
+    history_df = load_market_file('stock_price_history.csv')
+    
+    stock_info = stock_prices_df[stock_prices_df['in_game_name'].str.lower() == member.lower()]
+    
+    if stock_info.empty:
+        await ctx.send(f"Could not find a stock for a member named '{member}'. Please check the spelling.", ephemeral=True)
+        return
+        
+    stock_name = stock_info['in_game_name'].iloc[0]
+    current_price = stock_info['current_price'].iloc[0]
+
+    embed = discord.Embed(
+        title=f"Stock Ticker: ${stock_name.upper()}",
+        description=f"Viewing market data for **{stock_name}**.",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="Current Price", value=format_cc(current_price), inline=True)
+
+    stock_history = history_df[history_df['in_game_name'] == stock_name]
+    if len(stock_history) > 1:
+        stock_history = stock_history.copy() # Avoid SettingWithCopyWarning
+        stock_history['timestamp'] = pd.to_datetime(stock_history['timestamp'])
+        
+        plt.style.use('dark_background')
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(stock_history['timestamp'], stock_history['price'], color='#00FF00', linewidth=2)
+        
+        ax.set_title(f'{stock_name} Price History', color='white')
+        ax.set_ylabel('Price (CC)', color='white')
+        ax.tick_params(axis='x', colors='white')
+        ax.tick_params(axis='y', colors='white')
+        ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='gray')
+        
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.1, transparent=True)
+        buf.seek(0)
+        plt.close(fig)
+        
+        file = discord.File(buf, filename="price_chart.png")
+        embed.set_image(url="attachment://price_chart.png")
+        await ctx.send(embed=embed, file=file)
+    else:
+        await ctx.send(embed=embed)
 
 
 # --- Run the Bot ---
