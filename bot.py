@@ -25,6 +25,57 @@ ENRICHED_FAN_LOG_CSV = 'enriched_fan_log.csv'
 SCOREBOARD_CHANNEL_NAME = 'the-scoreboard'
 PROMOTION_CHANNEL_NAME = 'the-scoreboard' 
 
+# --- Shop Configuration ---
+SHOP_ITEMS = {
+    "PRESTIGE": { # Changed from LOBBYING
+        "prestige20": {
+            "name": "Lobby the Stewards (20 Prestige)",
+            "description": "Permanently increases your total prestige by 20.",
+            "amount": 20, # How much prestige is given
+            "type": "prestige"
+        },
+        "prestige100": {
+            "name": "Secure a Dynasty (100 Prestige)",
+            "description": "Permanently increases your total prestige by 100.",
+            "amount": 100,
+            "type": "prestige"
+        }
+    },
+    "PERFORMANCE": {
+        "p1": {
+            "name": "Study Race Tapes",
+            "description": "Increases Performance Yield multiplier by +0.05 per tier.",
+            "costs": [15000, 40000, 120000],
+            "max_tier": 3,
+            "type": "upgrade"
+        },
+        "p2": {
+            "name": "Perfect the Starting Gate",
+            "description": "Adds a flat +4 bonus to Performance Prestige before multiplication.",
+            "costs": [25000, 70000, 200000],
+            "max_tier": 3,
+            "type": "upgrade"
+        }
+    },
+    "TENURE": {
+        "t1": {
+            "name": "Build Club Morale",
+            "description": "Increases Tenure Yield multiplier by +0.1 per tier.",
+            "costs": [20000, 60000, 180000],
+            "max_tier": 3,
+            "type": "upgrade"
+        },
+        "t2": {
+            "name": "Garner Owner's Favor",
+            "description": "Adds a flat +150 CC per day. (Note: This is a passive effect handled by the backend)",
+            "costs": [75000, 225000, 675000],
+            "max_tier": 3,
+            "type": "upgrade"
+        }
+    }
+}
+
+
 # --- Bot Setup ---
 intents = discord.Intents.default()
 intents.message_content = True
@@ -187,6 +238,16 @@ def get_name_from_ticker_or_name(identifier: str):
             return name_match.iloc[0]['in_game_name']
             
     return None # Return None if no match is found
+
+def calculate_prestige_bundle_cost(current_prestige, amount_to_buy):
+    """Calculates the total cost of buying a bundle of prestige points."""
+    total_cost = 0
+    # --- FINAL RE-BALANCED FORMULA ---
+    for i in range(amount_to_buy):
+        # Base cost of 50, same gentle ramp.
+        cost_for_this_point = 50 * (1.000015 ** (current_prestige + i))
+        total_cost += cost_for_this_point
+    return total_cost
 
 # --- Events ---
 @bot.event
@@ -515,6 +576,155 @@ async def set_ticker(ctx, ticker: str):
         )
         await ctx.send(embed=embed)
 
+    finally:
+        os.remove(lock_file)
+        
+@bot.command(name="shop")
+async def shop(ctx):
+    """Displays the Prestige Shop with available items and your upgrade tiers."""
+    user_id = str(ctx.author.id)
+    crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
+    upgrades_df = load_market_file('shop_upgrades.csv', dtype={'discord_id': str})
+    enriched_df = load_market_file('enriched_fan_log.csv')
+
+    user_data = crew_coins_df[crew_coins_df['discord_id'] == user_id]
+    if user_data.empty:
+        await ctx.send("You must be registered to use the shop.", ephemeral=True)
+        return
+    balance = float(user_data['balance'].iloc[0])
+    in_game_name = user_data['in_game_name'].iloc[0]
+    user_upgrades = upgrades_df[upgrades_df['discord_id'] == user_id].set_index('upgrade_name')['tier'].to_dict()
+
+    embed = discord.Embed(title="Prestige Shop", description="Spend your Crew Coins to get ahead!", color=discord.Color.purple())
+    embed.set_footer(text=f"Your current balance: {format_cc(balance)}")
+
+    # --- Prestige Bundles ---
+    latest_stats = enriched_df[enriched_df['inGameName'] == in_game_name].sort_values('timestamp').iloc[-1]
+    current_prestige = latest_stats['cumulativePrestige']
+    
+    prestige_text = ""
+    for item_id, item_details in SHOP_ITEMS['PRESTIGE'].items():
+        bundle_cost = calculate_prestige_bundle_cost(current_prestige, item_details['amount'])
+        prestige_text += f"**{item_details['name']} (ID: `{item_id}`)**\nCost: **{format_cc(bundle_cost)}**\n\n"
+    embed.add_field(name="--- Prestige Purchases ---", value=prestige_text, inline=False)
+
+
+    # --- Tiered Upgrades ---
+    for category, items in SHOP_ITEMS.items():
+        if category == "PRESTIGE": continue
+        category_text = ""
+        for item_id, item_details in items.items():
+            current_tier = user_upgrades.get(item_details['name'], 0)
+            if current_tier >= item_details['max_tier']:
+                status = "**(Max Tier)**"
+            else:
+                cost = item_details['costs'][current_tier]
+                status = f"Tier {current_tier+1} Cost: **{format_cc(cost)}**"
+            
+            category_text += f"**{item_details['name']} (ID: `{item_id}`)**\n{item_details['description']}\n*Your Tier: {current_tier}* | {status}\n\n"
+        embed.add_field(name=f"--- {category} Upgrades ---", value=category_text, inline=False)
+        
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="buy")
+async def buy(ctx, item_id: str):
+    """Purchases an item or upgrade from the Prestige Shop."""
+    user_id = str(ctx.author.id)
+    item_id = item_id.lower()
+
+    # --- Find the Item ---
+    item_details = None
+    if item_id in SHOP_ITEMS['PRESTIGE']:
+        item_details = SHOP_ITEMS['PRESTIGE'][item_id]
+    else:
+        for category in ['PERFORMANCE', 'TENURE']:
+            if item_id in SHOP_ITEMS[category]:
+                item_details = SHOP_ITEMS[category][item_id]
+                break
+    
+    if not item_details:
+        await ctx.send("Invalid item ID. Please use the IDs listed in the `/shop` command.", ephemeral=True)
+        return
+
+    lock_file = 'market/market.lock'
+    if os.path.exists(lock_file):
+        await ctx.send("The market is busy. Please try again in a moment.", ephemeral=True)
+        return
+    open(lock_file, 'w').close()
+
+    try:
+        crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
+        upgrades_df = load_market_file('shop_upgrades.csv', dtype={'discord_id': str})
+
+        user_data_row = crew_coins_df[crew_coins_df['discord_id'] == user_id]
+        if user_data_row.empty:
+            await ctx.send("You must be registered to make purchases.", ephemeral=True)
+            return
+        
+        balance = float(user_data_row['balance'].iloc[0])
+        in_game_name = user_data_row['in_game_name'].iloc[0]
+        cost = 0
+        
+        # --- Handle Purchase Logic ---
+        if item_details['type'] == 'upgrade':
+            # ... (this logic remains the same as before) ...
+            upgrade_name = item_details['name']
+            user_upgrade_row = upgrades_df[(upgrades_df['discord_id'] == user_id) & (upgrades_df['upgrade_name'] == upgrade_name)]
+            current_tier = 0
+            if not user_upgrade_row.empty:
+                current_tier = user_upgrade_row['tier'].iloc[0]
+            if current_tier >= item_details['max_tier']:
+                await ctx.send(f"You have already reached the max tier for **{upgrade_name}**.", ephemeral=True)
+                return
+            cost = item_details['costs'][current_tier]
+            if balance < cost:
+                await ctx.send(f"You don't have enough Crew Coins. You need {format_cc(cost)}.", ephemeral=True)
+                return
+            if not user_upgrade_row.empty:
+                upgrades_df.loc[user_upgrade_row.index, 'tier'] += 1
+            else:
+                new_upgrade = pd.DataFrame([{'discord_id': user_id, 'upgrade_name': upgrade_name, 'tier': 1}])
+                upgrades_df = pd.concat([upgrades_df, new_upgrade], ignore_index=True)
+            upgrades_df.to_csv('market/shop_upgrades.csv', index=False)
+
+        elif item_details['type'] == 'prestige':
+            enriched_df = load_market_file('enriched_fan_log.csv')
+            latest_stats = enriched_df[enriched_df['inGameName'] == in_game_name].sort_values('timestamp').iloc[-1]
+            current_prestige = latest_stats['cumulativePrestige']
+            
+            amount_to_buy = item_details['amount']
+            cost = calculate_prestige_bundle_cost(current_prestige, amount_to_buy)
+
+            if balance < cost:
+                await ctx.send(f"You don't have enough Crew Coins. You need {format_cc(cost)}.", ephemeral=True)
+                return
+
+            new_prestige_row = latest_stats.copy()
+            new_prestige_row['timestamp'] = datetime.now(pytz.timezone('US/Central')).isoformat()
+            new_prestige_row['prestigeGain'] = float(amount_to_buy)
+            new_prestige_row['cumulativePrestige'] += float(amount_to_buy)
+            new_prestige_row['performancePrestigePoints'] = 0
+            new_prestige_row['tenurePrestigePoints'] = 0
+            
+            enriched_df = pd.concat([enriched_df, new_prestige_row.to_frame().T], ignore_index=True)
+            enriched_df.to_csv('enriched_fan_log.csv', index=False)
+
+        # --- Update Balance and Log ---
+        crew_coins_df.loc[crew_coins_df['discord_id'] == user_id, 'balance'] -= cost
+        crew_coins_df.to_csv('market/crew_coins.csv', index=False)
+        
+        log_market_transaction(
+            actor_id=user_id, transaction_type='PURCHASE', target_id='SYSTEM',
+            item_name=item_details['name'], item_quantity=1,
+            cc_amount=-cost, fee_paid=0
+        )
+
+        await ctx.send(embed=discord.Embed(
+            title="✅ Purchase Successful!",
+            description=f"You spent **{format_cc(cost)}** to acquire **{item_details['name']}**.",
+            color=discord.Color.green()
+        ))
     finally:
         os.remove(lock_file)
 
