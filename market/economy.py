@@ -1,4 +1,5 @@
 import pandas as pd
+import os
 
 def load_market_data(market_dir='market'):
     """Loads all necessary market CSVs into a dictionary of DataFrames."""
@@ -48,70 +49,97 @@ def calculate_hype_bonus(portfolios_df, member_name):
     hype_bonus = 1 + (0.0005 * shares_owned_by_others)
     return hype_bonus
 
-def process_cc_earnings(enriched_df, market_data_dfs):
+def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
     """
-    Calculates and applies continuous CC earnings for all members.
-    This includes Performance, Tenure, Hype Bonus, and Sponsorship Deals.
+    Calculates and applies continuous CC earnings and writes a detailed history log.
+    Balances are handled as floats during calculation and rounded to integers for storage.
     """
     crew_coins_df = market_data_dfs['crew_coins'].copy()
     portfolios_df = market_data_dfs['portfolios']
     shop_upgrades_df = market_data_dfs['shop_upgrades']
-    
-    # Get the most recent data point for each member from the latest analysis run
+
+    # --- Data Type Correction ---
+    # Convert balance to a numeric type to allow float additions.
+    # We will round it back to an integer before saving.
+    crew_coins_df['balance'] = pd.to_numeric(crew_coins_df['balance'], errors='coerce').fillna(0)
+
+    # Set in_game_name as index for efficient and reliable lookups
+    crew_coins_df.set_index('in_game_name', inplace=True)
+
     latest_data = enriched_df.sort_values('timestamp').groupby('inGameName').tail(1)
     
-    total_earnings = []
+    balance_history_records = []
+    dividend_payouts = {}
 
+    # --- First Pass: Calculate earnings ---
     for _, member in latest_data.iterrows():
         in_game_name = member['inGameName']
-        
-        # Find corresponding entry in crew_coins
-        coin_row = crew_coins_df[crew_coins_df['in_game_name'] == in_game_name]
-        if coin_row.empty:
+        if in_game_name not in crew_coins_df.index:
             continue
         
-        discord_id = coin_row['discord_id'].iloc[0]
+        discord_id = crew_coins_df.loc[in_game_name, 'discord_id']
 
-        # --- Base Yield Calculations ---
+        # ... (all the yield and multiplier calculations remain the same) ...
         perf_prestige = member.get('performancePrestigePoints', 0)
         tenure_prestige = member.get('tenurePrestigePoints', 0)
-        
-        # --- Apply Upgrades ---
         perf_multiplier = get_upgrade_value(shop_upgrades_df, discord_id, "Study Race Tapes", 1.25, 0.05)
         perf_flat_bonus = get_upgrade_value(shop_upgrades_df, discord_id, "Perfect the Starting Gate", 0, 4)
         tenure_multiplier = get_upgrade_value(shop_upgrades_df, discord_id, "Build Club Morale", 1.50, 0.1)
-        # Note: "Garner Owner's Favor" is a daily bonus and should be handled separately, perhaps in a daily script.
-        
         performance_yield = (perf_prestige + perf_flat_bonus) * perf_multiplier
         tenure_yield = tenure_prestige * tenure_multiplier
-        
-        # --- Social Mechanics ---
-        hype_bonus = calculate_hype_bonus(portfolios_df, in_game_name)
-        
-        # Total CC earned for the period before social bonuses
         base_cc_earned = performance_yield + tenure_yield
+        hype_bonus_multiplier = calculate_hype_bonus(portfolios_df, in_game_name)
+        hype_bonus_yield = base_cc_earned * (hype_bonus_multiplier - 1)
+        total_personal_cc_earned = base_cc_earned + hype_bonus_yield
         
-        # Apply Hype Bonus to personal earnings
-        total_personal_cc_earned = base_cc_earned * hype_bonus
-        
-        # --- Sponsorship Dividend ---
-        # Find the largest shareholder for the current member's stock
+        # --- Apply Rounded Earnings ---
+        # Round the final calculated earnings to the nearest whole number
+        rounded_earnings = round(total_personal_cc_earned)
+        crew_coins_df.loc[in_game_name, 'balance'] += rounded_earnings
+
+        # Queue dividends (these can remain floats until the final payout)
         shareholders = portfolios_df[portfolios_df['stock_in_game_name'] == in_game_name]
         if not shareholders.empty:
             largest_shareholder = shareholders.loc[shareholders['shares_owned'].idxmax()]
-            sponsor_discord_id = largest_shareholder['investor_discord_id']
-            
-            # Formula: Sponsorship Dividend = 0.10 * Target Member's Total CC Earned
+            sponsor_discord_id = str(largest_shareholder['investor_discord_id']) # ensure string
             sponsorship_dividend = 0.10 * total_personal_cc_earned
+            dividend_payouts[sponsor_discord_id] = dividend_payouts.get(sponsor_discord_id, 0) + sponsorship_dividend
             
-            # Add the dividend directly to the sponsor's balance
-            crew_coins_df.loc[crew_coins_df['discord_id'] == sponsor_discord_id, 'balance'] += sponsorship_dividend
+        balance_history_records.append({
+            'timestamp': run_timestamp, 'in_game_name': in_game_name, 'discord_id': discord_id,
+            'performance_yield': performance_yield, 'tenure_yield': tenure_yield,
+            'hype_bonus_yield': hype_bonus_yield, 'sponsorship_dividend_received': 0,
+            'total_period_earnings': total_personal_cc_earned, 'new_balance': 0
+        })
 
-        # --- Update Balances ---
-        crew_coins_df.loc[crew_coins_df['in_game_name'] == in_game_name, 'balance'] += total_personal_cc_earned
-        total_earnings.append({'in_game_name': in_game_name, 'earnings': total_personal_cc_earned})
+    # --- Second Pass: Apply dividends and finalize ---
+    # Temporarily create a discord_id -> in_game_name map for applying dividends
+    id_to_name_map = crew_coins_df['discord_id'].to_dict()
+    # Invert the map for our use case: {discord_id: in_game_name}
+    id_to_name_map = {v: k for k, v in id_to_name_map.items() if pd.notna(v)}
 
-    print("CC earnings processed for all members.")
+    for sponsor_id, dividend_amount in dividend_payouts.items():
+        if sponsor_id in id_to_name_map:
+            target_name = id_to_name_map[sponsor_id]
+            # Round the dividend before adding it to the balance
+            rounded_dividend = round(dividend_amount)
+            crew_coins_df.loc[target_name, 'balance'] += rounded_dividend
+
+    # Finalize history records with the true new balance
+    for record in balance_history_records:
+        in_game_name = record['in_game_name']
+        final_balance = crew_coins_df.loc[in_game_name, 'balance']
+        
+        # Add any dividend they might have received to their history record
+        dividend_received = dividend_payouts.get(record['discord_id'], 0)
+        record['sponsorship_dividend_received'] = dividend_received
+        record['total_period_earnings'] += dividend_received
+        record['new_balance'] = final_balance
+
+    print("CC earnings processed and history records created.")
     
-    # Return the updated DataFrame to be saved
-    return crew_coins_df, pd.DataFrame(total_earnings)
+    history_df = pd.DataFrame(balance_history_records)
+    history_df.to_csv('market/balance_history.csv', mode='a', header=not os.path.exists('market/balance_history.csv'), index=False, float_format='%.2f')
+    
+    # Return the updated DataFrame, resetting the index for saving
+    return crew_coins_df.reset_index()

@@ -10,13 +10,25 @@ def initialize_market():
     """
     MARKET_DIR = 'market'
     FILES_TO_CREATE = {
+        # --- State Files (Current Status) ---
         'market_state.csv': ['state_name', 'value'],
         'crew_coins.csv': ['discord_id', 'in_game_name', 'balance'],
         'stock_prices.csv': ['in_game_name', 'current_price', '24hr_change'],
         'portfolios.csv': ['investor_discord_id', 'stock_in_game_name', 'shares_owned'],
         'shop_upgrades.csv': ['discord_id', 'upgrade_name', 'tier'],
         'market_events.csv': ['event_name', 'description', 'duration_hours', 'effect_type', 'effect_value'],
-        'member_initialization.csv': ['in_game_name', 'random_init_factor']
+        'member_initialization.csv': ['in_game_name', 'random_init_factor', 'status'],
+        # --- History & Log Files ---
+        'stock_price_history.csv': ['timestamp', 'in_game_name', 'price'],
+        'balance_history.csv': [
+            'timestamp', 'in_game_name', 'discord_id', 'performance_yield', 'tenure_yield',
+            'hype_bonus_yield', 'sponsorship_dividend_received', 'total_period_earnings', 'new_balance'
+        ],
+        'universal_transaction_log.csv': [
+            'timestamp', 'actor_id', 'transaction_type', 'target_id', 'item_name',
+            'item_quantity', 'cc_amount', 'fee_paid'
+        ],
+        'market_event_log.csv': ['timestamp', 'event_name', 'event_type', 'details']
     }
     
     
@@ -86,7 +98,8 @@ def initialize_market():
         random_init_factor = random.randint(15, 45)
         member_init_records.append({
             'in_game_name': in_game_name,
-            'random_init_factor': random_init_factor
+            'random_init_factor': random_init_factor,
+            'status': 'active'
         })
 
     crew_coins_df = pd.DataFrame(crew_coins_records)

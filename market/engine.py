@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import random
 from datetime import timedelta
+import os
 
 def get_prestige_floor(prestige, random_init_factor):
     """Calculates the baseline stock value based on prestige and a random factor."""
@@ -20,7 +21,7 @@ def get_lagged_average(enriched_df, member_name, market_state):
     
     # Calculate 9-hour rolling average of fanGain
     # The 'fanGain' column is from the enriched_fan_log.csv
-    rolling_avg = member_df['fanGain'].rolling('9H').mean().iloc[-1]
+    rolling_avg = member_df['fanGain'].rolling('9h').mean().iloc[-1]
     return rolling_avg if pd.notna(rolling_avg) else 0
 
 def get_club_sentiment(enriched_df):
@@ -66,9 +67,9 @@ def get_player_condition(enriched_df, member_name):
     multiplier = min_mult + (normalized_std * (max_mult - min_mult))
     return multiplier
 
-def update_all_stock_prices(enriched_df, market_data_dfs):
+def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
     """
-    The main pricing engine. Calculates the new price for every stock.
+    The main pricing engine. Calculates new prices and writes them to a history log.
     """
     init_df = market_data_dfs['member_initialization']
     stock_prices_df = market_data_dfs['stock_prices'].copy()
@@ -76,52 +77,50 @@ def update_all_stock_prices(enriched_df, market_data_dfs):
     
     # --- Global Factors ---
     club_sentiment = get_club_sentiment(enriched_df)
-    active_event_modifier = 1.0 # Placeholder for now, will be implemented in Phase 4
-    
-    # Update market_state with the new sentiment
+    active_event_modifier = 1.0
     market_state.loc[market_state['state_name'] == 'club_sentiment', 'value'] = club_sentiment
 
     updated_prices = []
+    price_history_records = []
     member_names = enriched_df['inGameName'].unique()
 
     for name in member_names:
         member_latest_data = enriched_df[enriched_df['inGameName'] == name].iloc[-1]
         
-        # --- Core Value Components ---
         prestige = member_latest_data['cumulativePrestige']
         random_factor_row = init_df[init_df['in_game_name'] == name]
-        if random_factor_row.empty:
-            continue
+        if random_factor_row.empty: continue
         random_factor = random_factor_row['random_init_factor'].iloc[0]
         
         prestige_floor = get_prestige_floor(prestige, random_factor)
-        
         lagged_avg_gain = get_lagged_average(enriched_df, name, market_state)
         stochastic_jitter = np.random.normal(1.0, 0.08)
         
         performance_value = (lagged_avg_gain / 8757) * club_sentiment * stochastic_jitter
         core_value = prestige_floor + performance_value
         
-        # --- Multipliers ---
         player_condition = get_player_condition(enriched_df, name)
         
-        # --- Final Price Formula ---
         final_price = core_value * player_condition * active_event_modifier
-        final_price = max(final_price, 0.01) # Ensure price doesn't go to zero or negative
+        final_price = max(final_price, 0.01)
         
         updated_prices.append({'in_game_name': name, 'current_price': final_price})
+        
+        # Add a record for the history log
+        price_history_records.append({
+            'timestamp': run_timestamp,
+            'in_game_name': name,
+            'price': final_price
+        })
 
-    # Create a DataFrame with the new prices
-    new_prices_df = pd.DataFrame(updated_prices)
-    new_prices_df = new_prices_df.set_index('in_game_name')
-
-    # Update the main stock_prices_df
+    new_prices_df = pd.DataFrame(updated_prices).set_index('in_game_name')
     stock_prices_df = stock_prices_df.set_index('in_game_name')
     stock_prices_df['current_price'] = new_prices_df['current_price']
-    
-    # For now, 24hr_change is a placeholder. A more robust implementation would
-    # require storing historical price data.
     stock_prices_df['24hr_change'] = 0.0
     
-    print("Baggins Index: All stock prices have been updated.")
+    # Append the new price history to its CSV
+    history_df = pd.DataFrame(price_history_records)
+    history_df.to_csv('market/stock_price_history.csv', mode='a', header=not os.path.exists('market/stock_price_history.csv'), index=False)
+    
+    print("Baggins Index: Prices updated and history logged.")
     return stock_prices_df.reset_index(), market_state

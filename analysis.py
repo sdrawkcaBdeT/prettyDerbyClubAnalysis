@@ -128,40 +128,42 @@ def main():
     individual_log_df.to_csv('enriched_fan_log.csv', index=False)
     print("  - Successfully created enriched_fan_log.csv")
     
-    print("\n--- Processing Fan Exchange Economy ---")
-    market_data = load_market_data()
-    if market_data:
-        # CORRECTED: Using the correct DataFrame from your script
-        updated_crew_coins_df, _ = process_cc_earnings(individual_log_df, market_data)
-        
-        # Save the updated balances back to the CSV file
-        updated_crew_coins_df['balance'] = updated_crew_coins_df['balance'].round().astype(int)
-        updated_crew_coins_df.to_csv('market/crew_coins.csv', index=False)
-        print("Successfully updated and saved crew_coins.csv with new earnings.")
-    else:
-        print("Skipping CC earnings calculation due to missing market files.")
+    # =================================================================
+    # FAN EXCHANGE: ECONOMY AND PRICE ENGINE
+    # =================================================================
+    print("\n--- Processing Fan Exchange ---")
     
-    # =================================================================
-    # FAN EXCHANGE: UPDATE STOCK PRICES 
-    # =================================================================
-    print("\n--- Running Baggins Index Price Engine ---")
-    if market_data: # Relies on market_data loaded in the previous block
-        # Reload all market data to ensure it's fresh
-        all_market_dfs = {
-            'crew_coins': updated_crew_coins_df, # Use the in-memory updated version
-            'portfolios': pd.read_csv('market/portfolios.csv'),
-            'shop_upgrades': pd.read_csv('market/shop_upgrades.csv', dtype={'discord_id': str}),
-            'member_initialization': pd.read_csv('market/member_initialization.csv'),
-            'stock_prices': pd.read_csv('market/stock_prices.csv'),
-            'market_state': pd.read_csv('market/market_state.csv')
-        }
+    # Use the timestamp from when the report was generated for consistent logging
+    run_timestamp = generation_ct 
 
-        updated_stocks_df, updated_market_state_df = update_all_stock_prices(individual_log_df, all_market_dfs)
+    # --- Load Market Data ---
+    market_data = load_market_data()
+    if not market_data:
+        print("FATAL: Could not load market data. Halting Fan Exchange processing.")
+        return # Exit if market files aren't found
+        
+    # --- 1. Process CC Earnings & Log History ---
+    print("Running CC Earnings Engine...")
+    updated_crew_coins_df = process_cc_earnings(individual_log_df, market_data, run_timestamp)
+    updated_crew_coins_df['balance'] = updated_crew_coins_df['balance'].round().astype(int)
+    updated_crew_coins_df.to_csv('market/crew_coins.csv', index=False)
+    print("Successfully updated crew_coins.csv and logged balance_history.csv.")
 
-        # Save the updated prices and state back to their CSVs
-        updated_stocks_df.to_csv('market/stock_prices.csv', index=False, float_format='%.2f')
-        updated_market_state_df.to_csv('market/market_state.csv', index=False)
-        print("Successfully updated and saved stock_prices.csv and market_state.csv.")
+    # --- 2. Update Stock Prices & Log History ---
+    print("\nRunning Baggins Index Price Engine...")
+    # Refresh all dataframes for the price engine
+    all_market_dfs = {
+        'crew_coins': updated_crew_coins_df,
+        'portfolios': pd.read_csv('market/portfolios.csv'),
+        'shop_upgrades': pd.read_csv('market/shop_upgrades.csv', dtype={'discord_id': str}),
+        'member_initialization': pd.read_csv('market/member_initialization.csv'),
+        'stock_prices': pd.read_csv('market/stock_prices.csv'),
+        'market_state': pd.read_csv('market/market_state.csv')
+    }
+    updated_stocks_df, updated_market_state_df = update_all_stock_prices(individual_log_df, all_market_dfs, run_timestamp)
+    updated_stocks_df.to_csv('market/stock_prices.csv', index=False, float_format='%.2f')
+    updated_market_state_df.to_csv('market/market_state.csv', index=False)
+    print("Successfully updated stock_prices.csv and logged stock_price_history.csv.")
     # =================================================================
     
 if __name__ == "__main__":
