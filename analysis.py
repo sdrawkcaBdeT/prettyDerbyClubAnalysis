@@ -9,6 +9,7 @@ import pytz
 import matplotlib.patheffects as pe
 import matplotlib.font_manager as fm
 from market.economy import load_market_data, process_cc_earnings
+from market.engine import update_all_stock_prices
 
 # --- Configuration ---
 MEMBERS_CSV = 'members.csv'
@@ -139,6 +140,29 @@ def main():
         print("Successfully updated and saved crew_coins.csv with new earnings.")
     else:
         print("Skipping CC earnings calculation due to missing market files.")
+    
+    # =================================================================
+    # FAN EXCHANGE: UPDATE STOCK PRICES 
+    # =================================================================
+    print("\n--- Running Baggins Index Price Engine ---")
+    if market_data: # Relies on market_data loaded in the previous block
+        # Reload all market data to ensure it's fresh
+        all_market_dfs = {
+            'crew_coins': updated_crew_coins_df, # Use the in-memory updated version
+            'portfolios': pd.read_csv('market/portfolios.csv'),
+            'shop_upgrades': pd.read_csv('market/shop_upgrades.csv', dtype={'discord_id': str}),
+            'member_initialization': pd.read_csv('market/member_initialization.csv'),
+            'stock_prices': pd.read_csv('market/stock_prices.csv'),
+            'market_state': pd.read_csv('market/market_state.csv')
+        }
+
+        updated_stocks_df, updated_market_state_df = update_all_stock_prices(individual_log_df, all_market_dfs)
+
+        # Save the updated prices and state back to their CSVs
+        updated_stocks_df.to_csv('market/stock_prices.csv', index=False, float_format='%.2f')
+        updated_market_state_df.to_csv('market/market_state.csv', index=False)
+        print("Successfully updated and saved stock_prices.csv and market_state.csv.")
+    # =================================================================
     
 if __name__ == "__main__":
     main()
