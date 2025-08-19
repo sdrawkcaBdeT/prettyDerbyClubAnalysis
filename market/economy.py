@@ -50,58 +50,53 @@ def calculate_hype_bonus(portfolios_df, member_name):
     return hype_bonus
 
 def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
-    """
-    Calculates and applies continuous CC earnings and writes a detailed history log.
-    Balances are handled as floats during calculation and rounded to integers for storage.
-    """
     crew_coins_df = market_data_dfs['crew_coins'].copy()
     portfolios_df = market_data_dfs['portfolios']
     shop_upgrades_df = market_data_dfs['shop_upgrades']
+    market_state = market_data_dfs['market_state'].set_index('state_name')['value']
 
-    # --- Data Type Correction ---
-    # Convert balance to a numeric type to allow float additions.
-    # We will round it back to an integer before saving.
-    crew_coins_df['balance'] = pd.to_numeric(crew_coins_df['balance'], errors='coerce').fillna(0)
-
-    # Set in_game_name as index for efficient and reliable lookups
-    crew_coins_df.set_index('in_game_name', inplace=True)
+    # --- NEW: Event Handling for Earnings ---
+    active_event_name = str(market_state.get('active_event', 'None'))
+    performance_yield_modifier = 1.0
+    if active_event_name == "Headwind on the Back Stretch":
+        print("EVENT ACTIVE: Applying 'Headwind on the Back Stretch' modifier.")
+        performance_yield_modifier = 0.5 # Halve performance earnings
 
     latest_data = enriched_df.sort_values('timestamp').groupby('inGameName').tail(1)
-    
     balance_history_records = []
     dividend_payouts = {}
-
-    # --- First Pass: Calculate earnings ---
+    
+    crew_coins_df.set_index('in_game_name', inplace=True)
+    
     for _, member in latest_data.iterrows():
         in_game_name = member['inGameName']
-        if in_game_name not in crew_coins_df.index:
-            continue
-        
+        if in_game_name not in crew_coins_df.index: continue
         discord_id = crew_coins_df.loc[in_game_name, 'discord_id']
 
-        # ... (all the yield and multiplier calculations remain the same) ...
         perf_prestige = member.get('performancePrestigePoints', 0)
         tenure_prestige = member.get('tenurePrestigePoints', 0)
+        
         perf_multiplier = get_upgrade_value(shop_upgrades_df, discord_id, "Study Race Tapes", 1.25, 0.05)
         perf_flat_bonus = get_upgrade_value(shop_upgrades_df, discord_id, "Perfect the Starting Gate", 0, 4)
         tenure_multiplier = get_upgrade_value(shop_upgrades_df, discord_id, "Build Club Morale", 1.50, 0.1)
+        
         performance_yield = (perf_prestige + perf_flat_bonus) * perf_multiplier
+        # Apply the event modifier
+        performance_yield *= performance_yield_modifier
+        
         tenure_yield = tenure_prestige * tenure_multiplier
         base_cc_earned = performance_yield + tenure_yield
+        
         hype_bonus_multiplier = calculate_hype_bonus(portfolios_df, in_game_name)
         hype_bonus_yield = base_cc_earned * (hype_bonus_multiplier - 1)
         total_personal_cc_earned = base_cc_earned + hype_bonus_yield
         
-        # --- Apply Rounded Earnings ---
-        # Round the final calculated earnings to the nearest whole number
-        rounded_earnings = round(total_personal_cc_earned)
-        crew_coins_df.loc[in_game_name, 'balance'] += rounded_earnings
+        crew_coins_df.loc[in_game_name, 'balance'] += round(total_personal_cc_earned)
 
-        # Queue dividends (these can remain floats until the final payout)
         shareholders = portfolios_df[portfolios_df['stock_in_game_name'] == in_game_name]
         if not shareholders.empty:
             largest_shareholder = shareholders.loc[shareholders['shares_owned'].idxmax()]
-            sponsor_discord_id = str(largest_shareholder['investor_discord_id']) # ensure string
+            sponsor_discord_id = str(largest_shareholder['investor_discord_id'])
             sponsorship_dividend = 0.10 * total_personal_cc_earned
             dividend_payouts[sponsor_discord_id] = dividend_payouts.get(sponsor_discord_id, 0) + sponsorship_dividend
             
@@ -112,34 +107,23 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
             'total_period_earnings': total_personal_cc_earned, 'new_balance': 0
         })
 
-    # --- Second Pass: Apply dividends and finalize ---
-    # Temporarily create a discord_id -> in_game_name map for applying dividends
-    id_to_name_map = crew_coins_df['discord_id'].to_dict()
-    # Invert the map for our use case: {discord_id: in_game_name}
-    id_to_name_map = {v: k for k, v in id_to_name_map.items() if pd.notna(v)}
+    id_to_name_map = {v: k for k, v in crew_coins_df['discord_id'].to_dict().items() if pd.notna(v)}
 
     for sponsor_id, dividend_amount in dividend_payouts.items():
         if sponsor_id in id_to_name_map:
             target_name = id_to_name_map[sponsor_id]
-            # Round the dividend before adding it to the balance
-            rounded_dividend = round(dividend_amount)
-            crew_coins_df.loc[target_name, 'balance'] += rounded_dividend
+            crew_coins_df.loc[target_name, 'balance'] += round(dividend_amount)
 
-    # Finalize history records with the true new balance
     for record in balance_history_records:
         in_game_name = record['in_game_name']
         final_balance = crew_coins_df.loc[in_game_name, 'balance']
-        
-        # Add any dividend they might have received to their history record
-        dividend_received = dividend_payouts.get(record['discord_id'], 0)
+        dividend_received = dividend_payouts.get(str(record['discord_id']), 0)
         record['sponsorship_dividend_received'] = dividend_received
         record['total_period_earnings'] += dividend_received
         record['new_balance'] = final_balance
 
     print("CC earnings processed and history records created.")
-    
     history_df = pd.DataFrame(balance_history_records)
     history_df.to_csv('market/balance_history.csv', mode='a', header=not os.path.exists('market/balance_history.csv'), index=False, float_format='%.2f')
     
-    # Return the updated DataFrame, resetting the index for saving
     return crew_coins_df.reset_index()

@@ -75,6 +75,20 @@ SHOP_ITEMS = {
     }
 }
 
+# --- NEW: Event Flavor Text ---
+EVENT_FLAVOR_TEXT = {
+    "Dark Horse Bargains": "A respected scout has been spotted in the stands, taking a keen interest in some overlooked talent! A few underdog stocks are now available at a surprising discount for the next 24 hours. Could this be the next big thing?",
+    "Stewards' Tax Holiday": "By order of the board, a Tax Holiday is now in effect! For the next 72 hours, all broker's fees have been drastically reduced to encourage trading. Happy investing!",
+    "Bumper Crowds": "The stands are packed! Concession and ticket sales are through the roof, and the owners are sharing the profits with all club members!",
+    "Sponsor's Showcase": "It's a Sponsor's Showcase! For the next 48 hours, corporate partners are doubling the dividend payouts to the top shareholders of every racer. It pays to be a patron!",
+    "Rival Club in Disarray": "Whispers are coming from the paddock... a rival club is in turmoil after a disastrous race day. Their misfortune has put our club in a favorable light, and market sentiment is soaring!",
+    "The Crowd Roars": "The Crowd Roars! The top 5 most popular racers are getting a surge of support, boosting their market value!",
+    "Jockey Change Announced": "A last-minute Jockey Change has been announced! This could shake up the field, making some racers more predictable and others a wild card.",
+    "Headwind on the Back Stretch": "A strong Headwind on the Back Stretch is making it tough for racers to pull ahead based on pure performance. Experience and tenure will be key for the next couple of days.",
+    "The Gate is Sticky": "There's a slight delay at the start... The Gate is Sticky! Several racers are off to a slow but steady start, neutralizing some of the usual chaos at the opening bell.",
+    "False Start Declared": "A False Start has been declared by the stewards! They're reviewing the tapes, which may change the timing of how market data is processed. Stand by for the official results.",
+    "Photo Finish Review": "It's a Photo Finish for the middle of the pack! The stewards are taking a close look at the recent performance of racers ranked 5th through 15th, making their stock prices extra sensitive."
+}
 
 # --- Bot Setup ---
 intents = discord.Intents.default()
@@ -248,6 +262,20 @@ def calculate_prestige_bundle_cost(current_prestige, amount_to_buy):
         cost_for_this_point = 50 * (1.000015 ** (current_prestige + i))
         total_cost += cost_for_this_point
     return total_cost
+
+async def announce_event(event_name):
+    """Finds the scoreboard channel and announces a new market event."""
+    flavor_text = EVENT_FLAVOR_TEXT.get(event_name, f"A new market event has begun: **{event_name}**!")
+    
+    # This assumes the bot is only in one guild. If not, this needs to be more specific.
+    guild = bot.guilds[0]
+    if not guild:
+        print("Bot is not in any guild, cannot announce event.")
+        return
+        
+    channel = discord.utils.get(guild.channels, name=SCOREBOARD_CHANNEL_NAME)
+    if channel:
+        await channel.send(f"**📢 MARKET UPDATE!**\n{flavor_text}")
 
 # --- Events ---
 @bot.event
@@ -887,92 +915,53 @@ async def invest(ctx, member: str, amount: str):
     open(lock_file, 'w').close() # Create lock
 
     try:
-        # --- Load Data ---
         crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
         stock_prices_df = load_market_file('stock_prices.csv')
         portfolios_df = load_market_file('portfolios.csv', dtype={'investor_discord_id': str})
+        market_state = load_market_file('market_state.csv').set_index('state_name')['value']
 
-        # --- Get Investor Info ---
         investor_data = crew_coins_df[crew_coins_df['discord_id'] == investor_id]
-        if investor_data.empty:
-            await ctx.send("You do not have a Fan Exchange account yet.", ephemeral=True)
-            return
+        if investor_data.empty: return await ctx.send("You do not have a Fan Exchange account yet.", ephemeral=True)
 
         investor_balance = float(investor_data['balance'].iloc[0])
-        
-        # Resolve "all" amount
-        if cc_amount == -1:
-            cc_amount = int(investor_balance)
-            if cc_amount <= 0:
-                await ctx.send("You have no CC to invest.", ephemeral=True)
-                return
+        if cc_amount == -1: cc_amount = int(investor_balance)
+        if cc_amount <= 0: return await ctx.send("You have no Crew Coins to invest.", ephemeral=True)
+        if investor_balance < cc_amount: return await ctx.send(f"You don't have enough. Your balance is {format_cc(investor_balance)}.", ephemeral=True)
 
-        if investor_balance < cc_amount:
-            await ctx.send(f"You don't have enough CC. Your balance is {format_cc(investor_balance)}.", ephemeral=True)
-            return
-
-        # --- Get Target Stock Info ---
         target_name = get_name_from_ticker_or_name(member)
-        if not target_name:
-            await ctx.send(f"Could not find a stock for a member or ticker named '{member}'.", ephemeral=True)
-            return
-        target_stock = stock_prices_df[stock_prices_df['in_game_name'] == target_name]
-        if target_stock.empty:
-            await ctx.send(f"Could not find a stock for '{member}'.", ephemeral=True)
-            return
-            
-        target_name = target_stock['in_game_name'].iloc[0]
-        current_price = float(target_stock['current_price'].iloc[0])
-        if current_price <= 0:
-            await ctx.send("This stock has no value and cannot be invested in at this time.", ephemeral=True)
-            return
-
-        # --- Transaction Calculation ---
-        broker_fee = cc_amount * 0.03
-        net_investment = cc_amount - broker_fee
-        shares_purchased = net_investment / current_price
+        if not target_name: return await ctx.send(f"Could not find a stock for '{member}'.", ephemeral=True)
         
-        # --- Update DataFrames ---
-        # 1. Update investor's balance
-        crew_coins_df.loc[crew_coins_df['discord_id'] == investor_id, 'balance'] -= cc_amount
+        target_stock = stock_prices_df[stock_prices_df['in_game_name'] == target_name]
+        current_price = float(target_stock['current_price'].iloc[0])
 
-        # 2. Update investor's portfolio
-        existing_holding = portfolios_df[
-            (portfolios_df['investor_discord_id'] == investor_id) &
-            (portfolios_df['stock_in_game_name'] == target_name)
-        ]
+        broker_fee_rate = 0.03
+        if str(market_state.get('active_event')) == "Stewards' Tax Holiday":
+            broker_fee_rate = 0.005
+        
+        broker_fee = cc_amount * broker_fee_rate
+        shares_purchased = (cc_amount - broker_fee) / current_price
+        
+        crew_coins_df.loc[crew_coins_df['discord_id'] == investor_id, 'balance'] -= cc_amount
+        existing_holding = portfolios_df[(portfolios_df['investor_discord_id'] == investor_id) & (portfolios_df['stock_in_game_name'] == target_name)]
         if not existing_holding.empty:
             portfolios_df.loc[existing_holding.index, 'shares_owned'] += shares_purchased
         else:
-            new_row = pd.DataFrame([{
-                'investor_discord_id': investor_id,
-                'stock_in_game_name': target_name,
-                'shares_owned': shares_purchased
-            }])
+            new_row = pd.DataFrame([{'investor_discord_id': investor_id, 'stock_in_game_name': target_name, 'shares_owned': shares_purchased}])
             portfolios_df = pd.concat([portfolios_df, new_row], ignore_index=True)
-
-        # --- Save Updated Data ---
+        
         crew_coins_df.to_csv('market/crew_coins.csv', index=False)
         portfolios_df.to_csv('market/portfolios.csv', index=False)
         
-        # --- Log the Transaction ---
-        target_id = crew_coins_df[crew_coins_df['in_game_name'] == target_name]['discord_id'].iloc[0]
-        log_market_transaction(
-            actor_id=investor_id, transaction_type='INVEST', target_id=target_id,
-            item_name=f"{target_name}'s Stock", item_quantity=shares_purchased,
-            cc_amount=-cc_amount, fee_paid=broker_fee
-        )
-
-        # --- Confirmation Message ---
+        target_id_row = crew_coins_df[crew_coins_df['in_game_name'] == target_name]
+        target_id = target_id_row['discord_id'].iloc[0] if not target_id_row.empty else 'N/A'
+        
+        log_market_transaction(actor_id=investor_id, transaction_type='INVEST', target_id=target_id, item_name=f"{target_name}'s Stock", item_quantity=shares_purchased, cc_amount=-cc_amount, fee_paid=broker_fee)
+        
         embed = discord.Embed(title="✅ Investment Successful", color=discord.Color.green())
-        embed.description = (
-            f"You invested **{format_cc(cc_amount)}** into **{target_name}**.\n"
-            f"After a 3% Broker's Fee ({format_cc(broker_fee)}), you purchased **{shares_purchased:,.2f} shares**."
-        )
+        embed.description = f"You invested **{format_cc(cc_amount)}** into **{target_name}**.\nAfter a {broker_fee_rate:.1%} Broker's Fee ({format_cc(broker_fee)}), you purchased **{shares_purchased:,.2f} shares**."
         await ctx.send(embed=embed)
-
     finally:
-        os.remove(lock_file) # Release lock
+        os.remove(lock_file)
 
 
 @bot.command(name="sell")
@@ -1001,80 +990,51 @@ async def sell(ctx, member: str, shares_to_sell_str: str):
     open(lock_file, 'w').close()
 
     try:
-        # --- Load Data ---
         crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
         stock_prices_df = load_market_file('stock_prices.csv')
         portfolios_df = load_market_file('portfolios.csv', dtype={'investor_discord_id': str})
-        
-        # --- Get Target Stock Info ---
+        market_state = load_market_file('market_state.csv').set_index('state_name')['value']
+
         target_name = get_name_from_ticker_or_name(member)
-        if not target_name:
-            await ctx.send(f"Could not find a stock for a member or ticker named '{member}'.", ephemeral=True)
-            return
+        if not target_name: return await ctx.send(f"Could not find a stock for '{member}'.", ephemeral=True)
+        
         target_stock = stock_prices_df[stock_prices_df['in_game_name'] == target_name]
-        if target_stock.empty:
-            await ctx.send(f"Could not find a stock for '{member}'.", ephemeral=True)
-            return
-        target_name = target_stock['in_game_name'].iloc[0]
         current_price = float(target_stock['current_price'].iloc[0])
 
-        # --- Get Seller's Holdings ---
-        holding_index = portfolios_df[
-            (portfolios_df['investor_discord_id'] == seller_id) &
-            (portfolios_df['stock_in_game_name'] == target_name)
-        ].index
+        holding_index = portfolios_df[(portfolios_df['investor_discord_id'] == seller_id) & (portfolios_df['stock_in_game_name'] == target_name)].index
+        if holding_index.empty: return await ctx.send(f"You do not own any shares of **{target_name}**.", ephemeral=True)
         
-        if holding_index.empty:
-            await ctx.send(f"You do not own any shares of **{target_name}**.", ephemeral=True)
-            return
-
         shares_owned = float(portfolios_df.loc[holding_index, 'shares_owned'].iloc[0])
-        
-        # Resolve 'all' amount
-        if shares_to_sell == -1:
-            shares_to_sell = shares_owned
-
+        if shares_to_sell == -1: shares_to_sell = shares_owned
         if shares_owned < shares_to_sell:
-            await ctx.send(f"You don't have enough shares. You only own **{shares_owned:,.2f}** of **{target_name}**.", ephemeral=True)
-            return
+            return await ctx.send(f"You don't have enough shares. You only own **{shares_owned:,.2f}**.", ephemeral=True)
 
-        # --- Transaction Calculation ---
+        broker_fee_rate = 0.03
+        if str(market_state.get('active_event')) == "Stewards' Tax Holiday":
+            broker_fee_rate = 0.005
+
         gross_value = shares_to_sell * current_price
-        broker_fee = gross_value * 0.03
+        broker_fee = gross_value * broker_fee_rate
         net_proceeds = gross_value - broker_fee
         
-        # --- Update DataFrames ---
-        # 1. Update seller's balance
         crew_coins_df.loc[crew_coins_df['discord_id'] == seller_id, 'balance'] += net_proceeds
-
-        # 2. Update seller's portfolio
         portfolios_df.loc[holding_index, 'shares_owned'] -= shares_to_sell
-        # Remove the row if shares are zero to keep the file clean
         if portfolios_df.loc[holding_index, 'shares_owned'].iloc[0] < 0.001:
             portfolios_df.drop(holding_index, inplace=True)
-
-        # --- Save Updated Data ---
+            
         crew_coins_df.to_csv('market/crew_coins.csv', index=False)
         portfolios_df.to_csv('market/portfolios.csv', index=False)
-
-        # --- Log the Transaction ---
-        target_id = crew_coins_df[crew_coins_df['in_game_name'] == target_name]['discord_id'].iloc[0]
-        log_market_transaction(
-            actor_id=seller_id, transaction_type='SELL', target_id=target_id,
-            item_name=f"{target_name}'s Stock", item_quantity=-shares_to_sell,
-            cc_amount=net_proceeds, fee_paid=broker_fee
-        )
-
-        # --- Confirmation Message ---
+        
+        target_id_row = crew_coins_df[crew_coins_df['in_game_name'] == target_name]
+        target_id = target_id_row['discord_id'].iloc[0] if not target_id_row.empty else 'N/A'
+        
+        log_market_transaction(actor_id=seller_id, transaction_type='SELL', target_id=target_id, item_name=f"{target_name}'s Stock", item_quantity=-shares_to_sell, cc_amount=net_proceeds, fee_paid=broker_fee)
+        
         embed = discord.Embed(title="✅ Sale Successful", color=discord.Color.red())
-        embed.description = (
-            f"You sold **{shares_to_sell:,.2f} shares** of **{target_name}** for a gross value of {format_cc(gross_value)}.\n"
-            f"After a 3% Broker's Fee ({format_cc(broker_fee)}), you received **{format_cc(net_proceeds)}**."
-        )
+        embed.description = f"You sold **{shares_to_sell:,.2f} shares** of **{target_name}** for a gross value of {format_cc(gross_value)}.\nAfter a {broker_fee_rate:.1%} Broker's Fee ({format_cc(broker_fee)}), you received **{format_cc(net_proceeds)}**."
         await ctx.send(embed=embed)
-
     finally:
-        os.remove(lock_file) # Release lock
+        os.remove(lock_file)
 
 # --- Run the Bot ---
 load_dotenv() # Loads variables from .env file

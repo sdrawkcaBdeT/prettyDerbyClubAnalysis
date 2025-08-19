@@ -52,10 +52,11 @@ def initialize_market():
     print("Created 7 new market CSV files with correct headers.")
 
     market_state_data = {
-        'state_name': ['lag_index', 'active_event', 'event_end_time', 'club_sentiment'],
-        'value': [1, 'None', 'None', 1.0]
+    'state_name': ['lag_index', 'active_event', 'event_end_time', 'club_sentiment', 'last_event_check_timestamp'],
+    'value': [1, 'None', 'None', 1.0, None]
     }
-    pd.DataFrame(market_state_data).to_csv(os.path.join(MARKET_DIR, 'market_state.csv'), index=False)
+    market_state_df = pd.DataFrame(market_state_data)
+    market_state_df.to_csv(os.path.join(MARKET_DIR, 'market_state.csv'), index=False)
     print("Populated market_state.csv with initial values.")
 
     try:

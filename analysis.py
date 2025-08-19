@@ -10,6 +10,7 @@ import matplotlib.patheffects as pe
 import matplotlib.font_manager as fm
 from market.economy import load_market_data, process_cc_earnings
 from market.engine import update_all_stock_prices
+from market.events import check_and_trigger_event, clear_expired_events
 
 # --- Configuration ---
 MEMBERS_CSV = 'members.csv'
@@ -136,34 +137,37 @@ def main():
     # Use the timestamp from when the report was generated for consistent logging
     run_timestamp = generation_ct 
 
-    # --- Load Market Data ---
-    market_data = load_market_data()
-    if not market_data:
+    # --- 1. Load Initial Market Data ---
+    # The state is loaded once at the beginning of the process.
+    initial_market_data = load_market_data()
+    if not initial_market_data:
         print("FATAL: Could not load market data. Halting Fan Exchange processing.")
-        return # Exit if market files aren't found
-        
-    # --- 1. Process CC Earnings & Log History ---
+        return
+
+    # --- 2. Process CC Earnings & Update Stock Prices using the current event state ---
+    # These functions will use the event that was active when the script started.
     print("Running CC Earnings Engine...")
-    updated_crew_coins_df = process_cc_earnings(individual_log_df, market_data, run_timestamp)
+    updated_crew_coins_df = process_cc_earnings(individual_log_df, initial_market_data, run_timestamp)
     updated_crew_coins_df['balance'] = updated_crew_coins_df['balance'].round().astype(int)
     updated_crew_coins_df.to_csv('market/crew_coins.csv', index=False)
     print("Successfully updated crew_coins.csv and logged balance_history.csv.")
 
-    # --- 2. Update Stock Prices & Log History ---
     print("\nRunning Baggins Index Price Engine...")
-    # Refresh all dataframes for the price engine
-    all_market_dfs = {
-        'crew_coins': updated_crew_coins_df,
-        'portfolios': pd.read_csv('market/portfolios.csv'),
-        'shop_upgrades': pd.read_csv('market/shop_upgrades.csv', dtype={'discord_id': str}),
-        'member_initialization': pd.read_csv('market/member_initialization.csv'),
-        'stock_prices': pd.read_csv('market/stock_prices.csv'),
-        'market_state': pd.read_csv('market/market_state.csv')
-    }
+    all_market_dfs = {**initial_market_data, 'crew_coins': updated_crew_coins_df}
     updated_stocks_df, updated_market_state_df = update_all_stock_prices(individual_log_df, all_market_dfs, run_timestamp)
     updated_stocks_df.to_csv('market/stock_prices.csv', index=False, float_format='%.2f')
     updated_market_state_df.to_csv('market/market_state.csv', index=False)
     print("Successfully updated stock_prices.csv and logged stock_price_history.csv.")
+
+    # --- 3. Clear Any Events That Just Expired ---
+    # This happens *after* the run, so the event's effects were included in this cycle.
+    print("\n--- Checking for Expired Events ---")
+    clear_expired_events(run_timestamp)
+
+    # --- 4. Check for and Trigger a New Event for the *Next* Cycle ---
+    # This runs last, setting the stage for the next time analysis is performed.
+    print("\n--- Checking for New Events ---")
+    check_and_trigger_event(run_timestamp)
     # =================================================================
     
 if __name__ == "__main__":

@@ -11,17 +11,15 @@ def get_prestige_floor(prestige, random_init_factor):
     floor = (base ** 1.4) / 20
     return floor
 
-def get_lagged_average(enriched_df, member_name, market_state):
-    """Calculates the lagged 9-hour average fan gain."""
-    # The lag is complex and stateful, managed by the scheduler.
-    # For this commit, we'll implement the 9-hour average without the random lag shift.
-    # The lag shift will be implemented with the events system in a later commit.
+def get_lagged_average(enriched_df, member_name, market_state, override_hours=None):
+    # UPDATED: Now accepts an override for the rolling average hours
+    avg_hours = override_hours if override_hours is not None else 9
+    
     member_df = enriched_df[enriched_df['inGameName'] == member_name].copy()
+    member_df['timestamp'] = pd.to_datetime(member_df['timestamp'])
     member_df = member_df.set_index('timestamp').sort_index()
     
-    # Calculate 9-hour rolling average of fanGain
-    # The 'fanGain' column is from the enriched_fan_log.csv
-    rolling_avg = member_df['fanGain'].rolling('9h').mean().iloc[-1]
+    rolling_avg = member_df['fanGain'].rolling(f'{avg_hours}h').mean().iloc[-1]
     return rolling_avg if pd.notna(rolling_avg) else 0
 
 def get_club_sentiment(enriched_df):
@@ -73,45 +71,83 @@ def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
     """
     init_df = market_data_dfs['member_initialization']
     stock_prices_df = market_data_dfs['stock_prices'].copy()
-    market_state = market_data_dfs['market_state']
+    market_state_df = market_data_dfs['market_state']
+    market_state = market_state_df.set_index('state_name')['value']
+    portfolios_df = market_data_dfs['portfolios']
     
     # --- Global Factors ---
     club_sentiment = get_club_sentiment(enriched_df)
-    active_event_modifier = 1.0
-    market_state.loc[market_state['state_name'] == 'club_sentiment', 'value'] = club_sentiment
+    market_state['club_sentiment'] = club_sentiment
+    
+    member_names = list(enriched_df['inGameName'].unique())
+
+    # --- NEW: Comprehensive Event Handling ---
+    active_event_name = str(market_state.get('active_event', 'None'))
+    event_modifiers = {'price': {}, 'condition': {}, 'lag': {}} # Store per-player modifiers
+
+    if active_event_name != 'None':
+        print(f"EVENT ACTIVE: Applying '{active_event_name}' modifiers.")
+        events_df = pd.read_csv('market/market_events.csv')
+        event_details = events_df[events_df['event_name'] == active_event_name].iloc[0]
+
+        if active_event_name == "The Crowd Roars":
+            shares_owned = portfolios_df.groupby('stock_in_game_name')['shares_owned'].sum()
+            top_5_hyped = shares_owned.nlargest(5).index
+            for name in top_5_hyped:
+                event_modifiers['price'][name] = 1.05
+        
+        elif active_event_name == "The Gate is Sticky":
+            sticky_members = random.sample(member_names, k=int(len(member_names) * 0.20))
+            for name in sticky_members:
+                event_modifiers['condition'][name] = 1.0
+        
+        elif active_event_name == "Jockey Change Announced":
+            player1, player2 = random.sample(member_names, k=2)
+            cond1 = get_player_condition(enriched_df, player1)
+            cond2 = get_player_condition(enriched_df, player2)
+            event_modifiers['condition'][player1] = cond2
+            event_modifiers['condition'][player2] = cond1
+
+        elif active_event_name == "Photo Finish Review":
+            # This event modifies the lag calculation directly
+            ranks = enriched_df.sort_values('timestamp').groupby('inGameName').tail(1).sort_values('cumulativePrestige', ascending=False).reset_index()
+            target_members = ranks.loc[4:14, 'inGameName'] # Ranks 5-15 (0-indexed)
+            for name in target_members:
+                event_modifiers['lag'][name] = 6 # New 6-hour average
+
+        elif active_event_name == "False Start Declared":
+            # This is a stateful event handled by its own logic, no price modifier needed here
+            # We can add a log or a small notification if desired
+            print("False Start Declared: Lag index may have shifted.")
 
     updated_prices = []
     price_history_records = []
-    member_names = enriched_df['inGameName'].unique()
 
     for name in member_names:
         member_latest_data = enriched_df[enriched_df['inGameName'] == name].iloc[-1]
-        
         prestige = member_latest_data['cumulativePrestige']
         random_factor_row = init_df[init_df['in_game_name'] == name]
         if random_factor_row.empty: continue
         random_factor = random_factor_row['random_init_factor'].iloc[0]
         
+        # --- Apply Event Logic to Inputs ---
+        lag_override = event_modifiers['lag'].get(name)
+        
         prestige_floor = get_prestige_floor(prestige, random_factor)
-        lagged_avg_gain = get_lagged_average(enriched_df, name, market_state)
+        lagged_avg_gain = get_lagged_average(enriched_df, name, market_state, override_hours=lag_override)
         stochastic_jitter = np.random.normal(1.0, 0.08)
         
         performance_value = (lagged_avg_gain / 8757) * club_sentiment * stochastic_jitter
         core_value = prestige_floor + performance_value
         
-        player_condition = get_player_condition(enriched_df, name)
+        player_condition = event_modifiers['condition'].get(name, get_player_condition(enriched_df, name))
+        price_modifier = event_modifiers['price'].get(name, 1.0)
         
-        final_price = core_value * player_condition * active_event_modifier
+        final_price = (core_value * player_condition) * price_modifier
         final_price = max(final_price, 0.01)
         
         updated_prices.append({'in_game_name': name, 'current_price': final_price})
-        
-        # Add a record for the history log
-        price_history_records.append({
-            'timestamp': run_timestamp,
-            'in_game_name': name,
-            'price': final_price
-        })
+        price_history_records.append({'timestamp': run_timestamp, 'in_game_name': name, 'price': final_price})
 
     new_prices_df = pd.DataFrame(updated_prices).set_index('in_game_name')
     stock_prices_df = stock_prices_df.set_index('in_game_name')
