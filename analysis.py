@@ -8,6 +8,7 @@ import os
 import pytz
 import matplotlib.patheffects as pe
 import matplotlib.font_manager as fm
+from market.economy import load_market_data, process_cc_earnings
 
 # --- Configuration ---
 MEMBERS_CSV = 'members.csv'
@@ -125,6 +126,19 @@ def main():
     print("\n--- 3. Saving Enriched Fan Log ---")
     individual_log_df.to_csv('enriched_fan_log.csv', index=False)
     print("  - Successfully created enriched_fan_log.csv")
+    
+    print("\n--- Processing Fan Exchange Economy ---")
+    market_data = load_market_data()
+    if market_data:
+        # CORRECTED: Using the correct DataFrame from your script
+        updated_crew_coins_df, _ = process_cc_earnings(individual_log_df, market_data)
+        
+        # Save the updated balances back to the CSV file
+        updated_crew_coins_df['balance'] = updated_crew_coins_df['balance'].round().astype(int)
+        updated_crew_coins_df.to_csv('market/crew_coins.csv', index=False)
+        print("Successfully updated and saved crew_coins.csv with new earnings.")
+    else:
+        print("Skipping CC earnings calculation due to missing market files.")
     
 if __name__ == "__main__":
     main()

@@ -18,7 +18,10 @@ def initialize_market():
         'market_events.csv': ['event_name', 'description', 'duration_hours', 'effect_type', 'effect_value'],
         'member_initialization.csv': ['in_game_name', 'random_init_factor']
     }
-
+    
+    
+    random.seed(57)
+    
     if not os.path.exists(MARKET_DIR):
         os.makedirs(MARKET_DIR)
         print(f"Created directory: {MARKET_DIR}")
