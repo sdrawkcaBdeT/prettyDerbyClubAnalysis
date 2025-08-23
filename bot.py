@@ -10,6 +10,9 @@ from dotenv import load_dotenv
 from analysis import get_club_month_window # We need this helper function
 import matplotlib.pyplot as plt
 import io
+import asyncio
+import subprocess
+import json
 
 # --- Configuration ---
 COMMAND_LOG_CSV = 'command_log.csv'
@@ -24,6 +27,7 @@ ENRICHED_FAN_LOG_CSV = 'enriched_fan_log.csv'
 
 SCOREBOARD_CHANNEL_NAME = 'the-scoreboard'
 PROMOTION_CHANNEL_NAME = 'the-scoreboard' 
+FAN_EXCHANGE_CHANNEL_NAME = 'fan-exchange'
 
 # --- Shop Configuration ---
 SHOP_ITEMS = {
@@ -151,6 +155,14 @@ async def send_to_scoreboard(ctx, message_content, file_path=None):
         print(f"Error sending to scoreboard: {e}")
         await ctx.send("Sorry, I encountered an error while trying to post the results.", ephemeral=True)
 
+async def send_to_fan_exchange(guild, message_content, file=None):
+    """Finds the fan-exchange channel and sends a message there."""
+    channel = discord.utils.get(guild.channels, name=FAN_EXCHANGE_CHANNEL_NAME)
+    if channel:
+        await channel.send(message_content, file=file)
+    else:
+        print(f"ERROR: Could not find the #{FAN_EXCHANGE_CHANNEL_NAME} channel.")
+
 def log_command_usage(ctx):
     """Logs the details of a command execution to a CSV file."""
     file_exists = os.path.isfile(COMMAND_LOG_CSV)
@@ -238,7 +250,9 @@ def get_name_from_ticker_or_name(identifier: str):
     """
     # First, try to find a match in the tickers
     init_df = load_market_file('member_initialization.csv')
-    if not init_df.empty:
+    if not init_df.empty:        
+        # Explicitly treat the 'ticker' column as a string to handle empty values.
+        init_df['ticker'] = init_df['ticker'].astype(str)
         # Tickers are stored in uppercase, so we search in uppercase
         ticker_match = init_df[init_df['ticker'].str.upper() == identifier.upper()]
         if not ticker_match.empty:
@@ -264,18 +278,16 @@ def calculate_prestige_bundle_cost(current_prestige, amount_to_buy):
     return total_cost
 
 async def announce_event(event_name):
-    """Finds the scoreboard channel and announces a new market event."""
+    """Finds the fan-exchange channel and announces a new market event."""
     flavor_text = EVENT_FLAVOR_TEXT.get(event_name, f"A new market event has begun: **{event_name}**!")
     
-    # This assumes the bot is only in one guild. If not, this needs to be more specific.
     guild = bot.guilds[0]
     if not guild:
         print("Bot is not in any guild, cannot announce event.")
         return
         
-    channel = discord.utils.get(guild.channels, name=SCOREBOARD_CHANNEL_NAME)
-    if channel:
-        await channel.send(f"**📢 MARKET UPDATE!**\n{flavor_text}")
+    # UPDATED: This now correctly sends to the dedicated channel
+    await send_to_fan_exchange(guild, f"**📢 MARKET UPDATE!**\n{flavor_text}")
 
 # --- Events ---
 @bot.event
@@ -398,6 +410,100 @@ async def register(ctx, *, in_game_name: str):
     registrations_df.to_csv(USER_REGISTRATIONS_CSV, index=False)
     
     await ctx.send(f"✅ Success! Your Discord account has been linked to the in-game name: **{in_game_name}**. You can now use personal commands like `/myprogress`.", ephemeral=True)
+
+# This defines a global 15-minute cooldown for the /refresh command
+cooldown = commands.CooldownMapping.from_cooldown(1, 900, commands.BucketType.guild)
+
+@bot.command(name="refresh")
+async def refresh(ctx):
+    """Triggers a manual refresh of all club and market data."""
+    bucket = cooldown.get_bucket(ctx.message)
+    retry_after = bucket.update_rate_limit()
+    if retry_after:
+        return await ctx.send(f"This command is on cooldown. Please try again in {round(retry_after)} seconds.", ephemeral=True)
+
+    try:
+        with open('config.json', 'r') as f:
+            config = json.load(f)
+    except FileNotFoundError:
+        return await ctx.send("`config.json` not found. Manual refresh is disabled.", ephemeral=True)
+
+    if not config.get("ALLOW_MANUAL_REFRESH", False):
+        owner = await bot.fetch_user(config.get("OWNER_DISCORD_ID"))
+        if owner:
+            await owner.send(f"Hey! {ctx.author.name} tried to run a manual refresh, but it's disabled in the config.")
+        return await ctx.send("Manual refresh is currently disabled by the admin.", ephemeral=True)
+
+    await ctx.send("🔄 Manual data refresh initiated... This should take about a minute.")
+
+    try:
+        # --- CORRECTED LOGIC ---
+        # Use Popen to run the script in the background without blocking the bot.
+        # We run the 'full_run' sequence once and then exit.
+        process = subprocess.Popen(['python', 'race_day_scheduler.py', 'full_run_once'])
+        # Give the script time to run. You may need to adjust this value.
+        await asyncio.sleep(120) 
+
+        # Now we can send the completion message.
+        await ctx.send("✅ Data refresh complete! The market has been updated.")
+        
+        # Check for the flag file to see if a new event was triggered
+        event_flag_file = 'market/new_event.txt'
+        if os.path.exists(event_flag_file):
+            with open(event_flag_file, 'r') as f:
+                new_event_name = f.read().strip()
+            if new_event_name:
+                await announce_event(new_event_name)
+            os.remove(event_flag_file)
+
+    except Exception as e:
+        await ctx.send("❌ An error occurred during the data refresh. The admin has been notified.")
+        owner = await bot.fetch_user(config.get("OWNER_DISCORD_ID"))
+        if owner:
+            error_message = f"**CRITICAL ERROR in `/refresh` triggered by {ctx.author.name}:**\n```\n{e}\n```"
+            await owner.send(error_message[:1990])
+
+
+@bot.command(name="exchange_help")
+async def exchange_help(ctx):
+    """Provides a concise explanation and startup guide for the Fan Exchange system."""
+    embed = discord.Embed(
+        title="Welcome to the Fan Exchange!",
+        description="A stock market where the stocks are **us**.",
+        color=discord.Color.blue()
+    )
+    embed.add_field(
+        name="🚀 Getting Started: Your First 5 Steps",
+        value="1️⃣ **Register** if you haven't! Use `/register [in-game name]`.\n"
+              "2️⃣ **Set Your Ticker**! Use `/set_ticker [2-5 letter ticker]` to create your unique market ID.\n"
+              "3️⃣ **Explore**! Use `/market` to see top players and `/stock [name/ticker]` to view their history.\n"
+              "4️⃣ **Strategize**! Check the `/shop` for permanent CC upgrades or `/portfolio` to see your starting Crew Coins.\n"
+              "5️⃣ **Participate**! `/invest` in members you believe in, or `/buy` upgrades to boost your own earnings!",
+        inline=False
+    )
+    embed.add_field(
+        name="💰 What are Crew Coins (CC)?",
+        value="**Crew Coins (CC)** are the official currency. You earn them automatically from the **Prestige** you earn from tenure and in-game Fan gains. The more active you are, the more you earn.",
+        inline=False
+    )
+    embed.add_field(
+        name="📈 Advanced Mechanics",
+        value="**Hype Bonus**: The more members who own your stock, the bigger the bonus to your personal CC earnings!\n"
+              "**Sponsorship Deal**: Become the single largest shareholder of a stock to earn a **10% dividend** on that member's total CC earnings!\n"
+              "**Shop Upgrades**: Use the `/shop` to spend CC on permanent upgrades that boost your Performance (active) and Tenure (passive) Yields, increasing your income.",
+        inline=False
+    )
+    embed.add_field(
+        name="🤖 Core Commands",
+        value="`/portfolio` - See your CC and stock holdings.\n"
+              "`/market` - View the top market movers.\n"
+              "`/stock [name/ticker]` - Get info on a specific stock.\n"
+              "`/invest [name/ticker] [amount]` - Buy shares.\n"
+              "`/sell [name/ticker] [shares]` - Sell shares.\n"
+              "`/shop` & `/buy [item_id]` - Spend your CC!",
+        inline=False
+    )
+    await ctx.send(embed=embed, ephemeral=True)
 
 @bot.command()
 async def myprogress(ctx):
@@ -615,10 +721,16 @@ async def shop(ctx):
     upgrades_df = load_market_file('shop_upgrades.csv', dtype={'discord_id': str})
     enriched_df = load_market_file('enriched_fan_log.csv')
 
+    # --- FIX APPLIED HERE ---
+    # This robustly renames the column if it exists, preventing any KeyErrors later.
+    if 'inGameName' in enriched_df.columns:
+        enriched_df.rename(columns={'inGameName': 'in_game_name'}, inplace=True)
+    # --- END FIX ---
+
     user_data = crew_coins_df[crew_coins_df['discord_id'] == user_id]
     if user_data.empty:
-        await ctx.send("You must be registered to use the shop.", ephemeral=True)
-        return
+        return await ctx.send("You must be registered to use the shop.", ephemeral=True)
+
     balance = float(user_data['balance'].iloc[0])
     in_game_name = user_data['in_game_name'].iloc[0]
     user_upgrades = upgrades_df[upgrades_df['discord_id'] == user_id].set_index('upgrade_name')['tier'].to_dict()
@@ -626,8 +738,12 @@ async def shop(ctx):
     embed = discord.Embed(title="Prestige Shop", description="Spend your Crew Coins to get ahead!", color=discord.Color.purple())
     embed.set_footer(text=f"Your current balance: {format_cc(balance)}")
 
-    # --- Prestige Bundles ---
-    latest_stats = enriched_df[enriched_df['inGameName'] == in_game_name].sort_values('timestamp').iloc[-1]
+    user_stats = enriched_df[enriched_df['in_game_name'] == in_game_name]
+    if user_stats.empty:
+        return await ctx.send("Could not find your stats in the analysis log. Please run a data refresh.", ephemeral=True)
+
+    # This now correctly uses 'cumulativePrestige' from the log file
+    latest_stats = user_stats.sort_values('timestamp').iloc[-1]
     current_prestige = latest_stats['cumulativePrestige']
     
     prestige_text = ""
@@ -636,19 +752,12 @@ async def shop(ctx):
         prestige_text += f"**{item_details['name']} (ID: `{item_id}`)**\nCost: **{format_cc(bundle_cost)}**\n\n"
     embed.add_field(name="--- Prestige Purchases ---", value=prestige_text, inline=False)
 
-
-    # --- Tiered Upgrades ---
     for category, items in SHOP_ITEMS.items():
         if category == "PRESTIGE": continue
         category_text = ""
         for item_id, item_details in items.items():
             current_tier = user_upgrades.get(item_details['name'], 0)
-            if current_tier >= item_details['max_tier']:
-                status = "**(Max Tier)**"
-            else:
-                cost = item_details['costs'][current_tier]
-                status = f"Tier {current_tier+1} Cost: **{format_cc(cost)}**"
-            
+            status = "**(Max Tier)**" if current_tier >= item_details['max_tier'] else f"Tier {current_tier+1} Cost: **{format_cc(item_details['costs'][current_tier])}**"
             category_text += f"**{item_details['name']} (ID: `{item_id}`)**\n{item_details['description']}\n*Your Tier: {current_tier}* | {status}\n\n"
         embed.add_field(name=f"--- {category} Upgrades ---", value=category_text, inline=False)
         
@@ -764,14 +873,16 @@ async def portfolio(ctx):
     crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
     portfolios_df = load_market_file('portfolios.csv', dtype={'investor_discord_id': str})
 
-    if crew_coins_df.empty:
-        await ctx.send("Market data is currently unavailable. Please try again later.", ephemeral=True)
-        return
+    init_df = load_market_file('member_initialization.csv')
+    # Create a mapping from in_game_name to ticker for easy lookup
+    ticker_map = pd.Series(init_df.ticker.values, index=init_df.in_game_name).to_dict()
 
+    if crew_coins_df.empty:
+        return await ctx.send("Market data is currently unavailable. Please try again later.", ephemeral=True)
+    
     user_coin_data = crew_coins_df[crew_coins_df['discord_id'] == user_id]
     if user_coin_data.empty:
-        await ctx.send("You do not have a Fan Exchange account yet. Make sure you are registered with `/register`.", ephemeral=True)
-        return
+        return await ctx.send("You do not have a Fan Exchange account yet. Make sure you are registered with `/register`.", ephemeral=True)
     
     balance = user_coin_data['balance'].iloc[0]
     in_game_name = user_coin_data['in_game_name'].iloc[0]
@@ -783,7 +894,7 @@ async def portfolio(ctx):
         description=f"**In-Game Name:** {in_game_name}",
         color=discord.Color.gold()
     )
-    embed.add_field(name="💰 CC", value=format_cc(balance), inline=False)
+    embed.add_field(name="💰 Crew Coins", value=format_cc(balance), inline=False)
 
     if not user_stocks.empty:
         stock_prices_df = load_market_file('stock_prices.csv')
@@ -794,13 +905,21 @@ async def portfolio(ctx):
             for _, stock in user_stocks.iterrows():
                 stock_name = stock['stock_in_game_name']
                 shares = stock['shares_owned']
+                
+                # --- UPDATED: Use ticker if available ---
+                display_name = ticker_map.get(stock_name) or stock_name
+                if pd.notna(display_name) and display_name != 'None':
+                    display_name = f"${display_name}" # Add dollar sign for tickers
+                else:
+                    display_name = stock_name
+
                 try:
                     current_price = stock_prices_df.loc[stock_name, 'current_price']
                     value = shares * current_price
                     portfolio_value += value
-                    stock_display += f"**{stock_name}**: {shares:,.2f} shares ({format_cc(value)})\n"
+                    stock_display += f"**{display_name}**: {shares:,.2f} shares ({format_cc(value)})\n"
                 except KeyError:
-                    stock_display += f"**{stock_name}**: {shares:,.2f} shares (Price data unavailable)\n"
+                    stock_display += f"**{display_name}**: {shares:,.2f} shares (Price data unavailable)\n"
             
             embed.add_field(name="📈 Stock Holdings", value=stock_display, inline=False)
             embed.set_footer(text=f"Total Portfolio Value: {format_cc(float(balance) + portfolio_value)}")
@@ -841,36 +960,44 @@ async def stock(ctx, *, member: str):
     stock_prices_df = load_market_file('stock_prices.csv')
     history_df = load_market_file('stock_price_history.csv')
     
+    # --- NEW: Load ticker data for display ---
+    init_df = load_market_file('member_initialization.csv')
+    ticker_map = pd.Series(init_df.ticker.values, index=init_df.in_game_name).to_dict()
+
     target_name = get_name_from_ticker_or_name(member)
     if not target_name:
-        await ctx.send(f"Could not find a stock for a member or ticker named '{member}'.", ephemeral=True)
-        return
-    stock_info = stock_prices_df[stock_prices_df['in_game_name'] == target_name]
+        return await ctx.send(f"Could not find a stock for a member or ticker named '{member}'.", ephemeral=True)
     
+    stock_info = stock_prices_df[stock_prices_df['in_game_name'] == target_name]
     if stock_info.empty:
-        await ctx.send(f"Could not find a stock for a member named '{member}'. Please check the spelling.", ephemeral=True)
-        return
+        return await ctx.send(f"Could not find price data for '{target_name}'. Please run a data refresh.", ephemeral=True)
         
-    stock_name = stock_info['in_game_name'].iloc[0]
     current_price = stock_info['current_price'].iloc[0]
 
+    # --- UPDATED: Use ticker for the title if it exists ---
+    display_ticker = ticker_map.get(target_name)
+    if pd.notna(display_ticker) and display_ticker != 'None':
+        title = f"Stock Ticker: ${display_ticker.upper()}"
+    else:
+        title = f"Stock Info: {target_name}"
+
     embed = discord.Embed(
-        title=f"Stock Ticker: ${stock_name.upper()}",
-        description=f"Viewing market data for **{stock_name}**.",
+        title=title,
+        description=f"Viewing market data for **{target_name}**.",
         color=discord.Color.green()
     )
     embed.add_field(name="Current Price", value=format_cc(current_price), inline=True)
 
-    stock_history = history_df[history_df['in_game_name'] == stock_name]
+    stock_history = history_df[history_df['in_game_name'] == target_name]
     if len(stock_history) > 1:
-        stock_history = stock_history.copy() # Avoid SettingWithCopyWarning
+        stock_history = stock_history.copy()
         stock_history['timestamp'] = pd.to_datetime(stock_history['timestamp'])
         
         plt.style.use('dark_background')
         fig, ax = plt.subplots(figsize=(10, 4))
         ax.plot(stock_history['timestamp'], stock_history['price'], color='#00FF00', linewidth=2)
         
-        ax.set_title(f'{stock_name} Price History', color='white')
+        ax.set_title(f'{target_name} Price History', color='white')
         ax.set_ylabel('Price (CC)', color='white')
         ax.tick_params(axis='x', colors='white')
         ax.tick_params(axis='y', colors='white')
