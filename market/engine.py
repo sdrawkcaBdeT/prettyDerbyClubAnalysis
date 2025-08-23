@@ -113,7 +113,7 @@ def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
                 event_modifiers['condition'][player1] = cond2
                 event_modifiers['condition'][player2] = cond1
             elif active_event_name == "Photo Finish Review":
-                ranks = enriched_df.sort_values('timestamp').groupby('inGameName').tail(1).sort_values('cumulativePrestige', ascending=False).reset_index()
+                ranks = enriched_df.sort_values('timestamp').groupby('inGameName').tail(1).sort_values('lifetimePrestige', ascending=False).reset_index()
                 target_members = ranks.loc[4:14, 'inGameName']
                 for name in target_members: event_modifiers['lag'][name] = 6
 
@@ -125,7 +125,7 @@ def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
 
     for name in member_names:
         member_latest_data = enriched_df[enriched_df['inGameName'] == name].iloc[-1]
-        prestige = member_latest_data['cumulativePrestige']
+        prestige = member_latest_data['lifetimePrestige']
         random_factor_row = init_df[init_df['in_game_name'] == name]
         if random_factor_row.empty: continue
         random_factor = random_factor_row['random_init_factor'].iloc[0]

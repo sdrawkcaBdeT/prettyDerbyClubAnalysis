@@ -697,35 +697,55 @@ async def set_ticker(ctx, ticker: str):
 async def shop(ctx):
     """Displays the Prestige Shop with available items and your upgrade tiers."""
     user_id = str(ctx.author.id)
-    crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
-    upgrades_df = load_market_file('shop_upgrades.csv', dtype={'discord_id': str})
-    enriched_df = load_market_file('enriched_fan_log.csv')
 
-    # --- FIX APPLIED HERE ---
-    # This robustly renames the column if it exists, preventing any KeyErrors later.
-    if 'inGameName' in enriched_df.columns:
-        enriched_df.rename(columns={'inGameName': 'in_game_name'}, inplace=True)
-    # --- END FIX ---
+    # --- Load Data ---
+    try:
+        crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
+        upgrades_df = load_market_file('shop_upgrades.csv', dtype={'discord_id': str})
+        enriched_df = pd.read_csv(ENRICHED_FAN_LOG_CSV)
+    except FileNotFoundError as e:
+        await ctx.send(f"**Admin Alert:** A required market file is missing: `{e.filename}`. The shop cannot function.", ephemeral=True)
+        return
 
+    # --- START OF DEBUGGING BLOCK ---
+    # We print the columns right after loading to see what pandas is reading.
+    print(f"DEBUG: Columns in enriched_fan_log.csv are: {enriched_df.columns.tolist()}")
+    # --- END OF DEBUGGING BLOCK ---
+
+    # --- Robust User Data Lookup ---
     user_data = crew_coins_df[crew_coins_df['discord_id'] == user_id]
     if user_data.empty:
-        return await ctx.send("You must be registered to use the shop.", ephemeral=True)
+        return await ctx.send("It looks like you don't have a Fan Exchange account yet. Make sure you are registered with `/register`.", ephemeral=True)
 
     balance = float(user_data['balance'].iloc[0])
     in_game_name = user_data['in_game_name'].iloc[0]
+
+    try:
+        # This is the line that has been causing the error.
+        user_stats = enriched_df[enriched_df['inGameName'] == in_game_name]
+    except KeyError:
+        # If we get a KeyError, this block will run, giving us a definitive answer.
+        error_message = (
+            "**CRITICAL ERROR in `/shop`:**\n"
+            f"I tried to find the column `inGameName` in `enriched_fan_log.csv`, but it doesn't exist.\n"
+            f"The columns I actually found are: `{enriched_df.columns.tolist()}`\n\n"
+            "Please check `analysis.py` to ensure it's writing the correct column headers, and that the bot is reading the correct, most recent file."
+        )
+        print(error_message) # Also print to console for the bot owner
+        await ctx.send("Sorry, a critical data error occurred. The `inGameName` column could not be found. Please notify the admin.", ephemeral=True)
+        return # Stop the command here
+
+    if user_stats.empty:
+        return await ctx.send("I couldn't find any analysis data for you in the logs. A data refresh may be needed to purchase prestige.", ephemeral=True)
+
+    latest_stats = user_stats.sort_values('timestamp').iloc[-1]
+    current_prestige = latest_stats['lifetimePrestige']
     user_upgrades = upgrades_df[upgrades_df['discord_id'] == user_id].set_index('upgrade_name')['tier'].to_dict()
 
+    # --- Build and Send Embed (This part remains the same) ---
     embed = discord.Embed(title="Prestige Shop", description="Spend your Crew Coins to get ahead!", color=discord.Color.purple())
     embed.set_footer(text=f"Your current balance: {format_cc(balance)}")
 
-    user_stats = enriched_df[enriched_df['in_game_name'] == in_game_name]
-    if user_stats.empty:
-        return await ctx.send("Could not find your stats in the analysis log. Please run a data refresh.", ephemeral=True)
-
-    # This now correctly uses 'cumulativePrestige' from the log file
-    latest_stats = user_stats.sort_values('timestamp').iloc[-1]
-    current_prestige = latest_stats['cumulativePrestige']
-    
     prestige_text = ""
     for item_id, item_details in SHOP_ITEMS['PRESTIGE'].items():
         bundle_cost = calculate_prestige_bundle_cost(current_prestige, item_details['amount'])
@@ -796,7 +816,7 @@ async def buy(ctx, item_id: str):
             upgrades_df.to_csv('market/shop_upgrades.csv', index=False)
 
         elif item_details['type'] == 'prestige':
-            enriched_df = load_market_file('enriched_fan_log.csv')
+            enriched_df = pd.read_csv(ENRICHED_FAN_LOG_CSV)
             latest_stats = enriched_df[enriched_df['inGameName'] == in_game_name].sort_values('timestamp').iloc[-1]
             # --- UPDATED (Task 3.2) ---
             current_lifetime_prestige = latest_stats['lifetimePrestige']

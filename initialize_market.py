@@ -63,7 +63,7 @@ def initialize_market():
 
     # --- Populate other initial files ---
     fan_log_df = pd.read_csv('enriched_fan_log.csv')
-    fan_log_df.rename(columns={'inGameName': 'in_game_name', 'cumulativePrestige': 'total_prestige'}, inplace=True)
+    fan_log_df.rename(columns={'inGameName': 'in_game_name', 'lifetimePrestige': 'total_prestige'}, inplace=True)
     registrations_df = pd.read_csv('user_registrations.csv')
     
     latest_entries = fan_log_df.sort_values('timestamp').groupby('in_game_name').tail(1)

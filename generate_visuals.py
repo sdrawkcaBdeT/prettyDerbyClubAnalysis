@@ -112,7 +112,7 @@ def generate_prestige_leaderboard(individual_log_df, last_updated_str, generated
 
     # --- 1. Data Preparation ---
     latest_prestige = individual_log_df.loc[individual_log_df.groupby('inGameName')['timestamp'].idxmax()]
-    top_15 = latest_prestige.nlargest(30, 'cumulativePrestige').sort_values('cumulativePrestige', ascending=True)
+    top_15 = latest_prestige.nlargest(30, 'monthlyPrestige').sort_values('monthlyPrestige', ascending=True)
 
     # --- 2. Custom Color Mapping ---
     rank_colors = {
@@ -130,11 +130,11 @@ def generate_prestige_leaderboard(individual_log_df, last_updated_str, generated
 
     bars = ax.barh(
         y=[f"{name} ({rank})" for name, rank in zip(top_15['inGameName'], top_15['prestigeRank'])],
-        width=top_15['cumulativePrestige'],
+        width=top_15['monthlyPrestige'],
         color=bar_colors
     )
     
-    ax.bar_label(bars, labels=[f"{int(p):,}" for p in top_15['cumulativePrestige']], padding=5, color='white', fontsize=11, weight='bold')
+    ax.bar_label(bars, labels=[f"{int(p):,}" for p in top_15['monthlyPrestige']], padding=5, color='white', fontsize=11, weight='bold')
     
     ax.set_xlabel('Total Prestige Points', fontsize=12, color='white')
     ax.set_ylabel('Member', fontsize=12, color='white')
@@ -392,7 +392,7 @@ def generate_log_image(log_data, title, filename, generated_str, limit=15, is_cl
             ax.text(1, 1.025, f"RANK {int(rank)}", color='#FFD700', fontsize=14, transform=ax.transAxes, ha='right', va='bottom', fontproperties=rankfont)
 
         prestige_rank = latest_entry['prestigeRank']
-        total_prestige = latest_entry['cumulativePrestige']
+        total_prestige = latest_entry['monthlyPrestige']
         points_to_next = latest_entry['pointsToNextRank']
         
         header_y = 1.015
@@ -503,13 +503,13 @@ def create_all_visuals(members_df, summary_df, individual_log_df, club_log_df, c
     csv_output_cols = [
         'timestamp', 'memberID', 'inGameName', 'fanCount', 'fanGain',
         'timeDiffMinutes', 'performancePrestigePoints', 'tenurePrestigePoints',
-        'cumulativePrestige', 'prestigeRank', 'pointsToNextRank', 'rank' 
+        'monthlyPrestige', 'prestigeRank', 'pointsToNextRank', 'rank' 
     ]
     
     final_csv_df = final_csv_df[csv_output_cols]
 
     # Format numeric columns for clarity
-    numeric_cols_to_format = ['fanGain', 'timeDiffMinutes', 'performancePrestigePoints', 'tenurePrestigePoints', 'cumulativePrestige']
+    numeric_cols_to_format = ['fanGain', 'timeDiffMinutes', 'performancePrestigePoints', 'tenurePrestigePoints', 'monthlyPrestige']
     for col in numeric_cols_to_format:
         if col in final_csv_df.columns:
             final_csv_df[col] = pd.to_numeric(final_csv_df[col], errors='coerce').fillna(0)
@@ -584,7 +584,7 @@ def main():
         timestamp=('timestamp', 'last')
     ).reset_index()
     prestige_info = individual_log_df.loc[individual_log_df.groupby(['inGameName', 'date'])['timestamp'].idxmax()][
-        ['inGameName', 'date', 'cumulativePrestige', 'prestigeRank', 'pointsToNextRank']
+        ['inGameName', 'date', 'monthlyPrestige', 'prestigeRank', 'pointsToNextRank']
     ]
     daily_summary_df = pd.merge(daily_summary_df, prestige_info, on=['inGameName', 'date'])
     daily_summary_df['timestamp'] = pd.to_datetime(daily_summary_df['timestamp']) # Ensure datetime type
