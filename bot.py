@@ -547,17 +547,20 @@ async def exchange_help(ctx):
 
 @bot.command()
 async def myprogress(ctx):
-    """Provides a personalized progress report since the user's last request."""
+    """Provides a personalized progress report and earnings summary."""
     inGameName = get_inGameName(ctx.author.id)
     if not inGameName:
         await ctx.send("You need to register first! Use `/register [your-exact-in-game-name]`", ephemeral=True)
         return
     
+    # --- Load Data ---
     try:
         ranks_df = pd.read_csv(RANKS_CSV)
         enriched_df = pd.read_csv(ENRICHED_FAN_LOG_CSV)
-        enriched_df['timestamp'] = pd.to_datetime(enriched_df['timestamp'])
+        enriched_df['timestamp'] = pd.to_datetime(enriched_df['timestamp'], format='mixed')
         progress_df = pd.read_csv(PROGRESS_LOG_CSV) if os.path.exists(PROGRESS_LOG_CSV) else pd.DataFrame(columns=['discord_id', 'last_checked_timestamp'])
+        balance_history_df = load_market_file('balance_history.csv')
+        crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
     except FileNotFoundError as e:
         await ctx.send(f"Missing a data file (`{e.filename}`). Please run the analysis.", ephemeral=True)
         return
@@ -567,13 +570,15 @@ async def myprogress(ctx):
         await ctx.send("I couldn't find any analysis data for you yet.", ephemeral=True)
         return
 
+    # --- Standard Progress Calculations ---
     last_checked_entry = progress_df[progress_df['discord_id'] == ctx.author.id]
-    last_checked_timestamp = pd.to_datetime(last_checked_entry.iloc[0]['last_checked_timestamp']) if not last_checked_entry.empty else user_analysis_df.iloc[0]['timestamp']
-    
+    # Use a very old timestamp if the user has never checked before
+    last_checked_timestamp = pd.to_datetime(last_checked_entry.iloc[0]['last_checked_timestamp'], format='mixed') if not last_checked_entry.empty else pd.Timestamp.min.tz_localize('UTC')
+
     time_since_last_check = datetime.now(pytz.utc) - last_checked_timestamp.tz_convert('UTC')
     progress_period_df = user_analysis_df[user_analysis_df['timestamp'] > last_checked_timestamp]
     
-    before_stats = user_analysis_df[user_analysis_df['timestamp'] <= last_checked_timestamp].iloc[-1] if not progress_period_df.empty else user_analysis_df.iloc[-1]
+    before_stats = user_analysis_df[user_analysis_df['timestamp'] <= last_checked_timestamp].iloc[-1] if not user_analysis_df[user_analysis_df['timestamp'] <= last_checked_timestamp].empty else user_analysis_df.iloc[0]
     after_stats = user_analysis_df.iloc[-1]
 
     fans_gained = progress_period_df['fanGain'].sum()
@@ -581,7 +586,7 @@ async def myprogress(ctx):
     
     rank_before = get_club_rank(enriched_df, last_checked_timestamp, inGameName)
     rank_after = get_club_rank(enriched_df, after_stats['timestamp'], inGameName)
-    rank_change = (rank_before - rank_after) if rank_before and rank_after else 0
+    rank_change = (rank_before - rank_after) if rank_before is not None and rank_after is not None else 0
     
     start_date, end_date = get_club_month_window(datetime.now(pytz.timezone('US/Central')))
     user_monthly_logs = user_analysis_df[(user_analysis_df['timestamp'] >= start_date) & (user_analysis_df['timestamp'] <= end_date)]
@@ -595,31 +600,68 @@ async def myprogress(ctx):
         hrs_remaining = (end_date - latest_log['timestamp']).total_seconds() / 3600
         eom_projection = fan_contribution + (fans_per_hour * hrs_remaining)
 
+    # --- NEW: Earnings Calculation ---
+    user_earnings_df = pd.DataFrame()
+    if not balance_history_df.empty:
+        balance_history_df['timestamp'] = pd.to_datetime(balance_history_df['timestamp'], format='mixed')
+        user_earnings_df = balance_history_df[
+            (balance_history_df['discord_id'].astype(str) == str(ctx.author.id)) &
+            (balance_history_df['timestamp'] > last_checked_timestamp.tz_convert(balance_history_df['timestamp'].dt.tz))
+        ]
+
+    total_performance = user_earnings_df['performance_yield'].sum()
+    total_tenure = user_earnings_df['tenure_yield'].sum()
+    total_hype = user_earnings_df['hype_bonus_yield'].sum()
+    total_sponsorship = user_earnings_df['sponsorship_dividend_received'].sum()
+    total_earned = total_performance + total_tenure + total_hype + total_sponsorship
+
+    user_coin_data = crew_coins_df[crew_coins_df['discord_id'] == str(ctx.author.id)]
+    current_balance = user_coin_data['balance'].iloc[0] if not user_coin_data.empty else 0
+
+
+    # --- Formatting the Response ---
     time_ago_str = format_timedelta_ddhhmm(time_since_last_check)
-    fans_line = f"**Fans:** You've gained **{fans_gained:,.0f}** fans. Your EOM projection is **{eom_projection:,.0f}**."
-    
+    embed = discord.Embed(
+        title=f"{inGameName}'s Progress Report",
+        description=f"Here's your progress from the last **{time_ago_str}**.",
+        color=discord.Color.blue()
+    )
+
+    fans_line = f"You've gained **{fans_gained:,.0f}** fans. Your EOM projection is **{eom_projection:,.0f}**."
     next_rank_index = ranks_df[ranks_df['rank_name'] == after_stats['prestigeRank']].index
     next_rank_name = "Max Rank"
     if not next_rank_index.empty and next_rank_index[0] + 1 < len(ranks_df):
         next_rank_name = ranks_df.iloc[next_rank_index[0] + 1]['rank_name']
-        
-    # --- UPDATED (Task 3.1) ---
-    monthly_prestige_line = f"**Monthly Prestige:** You have **{after_stats['monthlyPrestige']:,.2f}** this month. You need **{after_stats['pointsToNextRank']:,.2f}** more for **{next_rank_name}**."
-    lifetime_prestige_line = f"**Lifetime Prestige:** You gained **{lifetime_prestige_gained:,.2f}**, bringing your total to **{after_stats['lifetimePrestige']:,.2f}**."
-    
+    monthly_prestige_line = f"You have **{after_stats['monthlyPrestige']:,.2f}** prestige this month. You need **{after_stats['pointsToNextRank']:,.2f}** more for **{next_rank_name}**."
     rank_change_str = f"moved up **{abs(rank_change)}** spots" if rank_change > 0 else (f"moved down **{abs(rank_change)}** spots" if rank_change < 0 else "held your ground")
-    club_rank_line = f"**Club Rank:** You've {rank_change_str} and are now **#{rank_after}** in monthly fan gain."
+    club_rank_line = f"You've {rank_change_str} and are now **#{rank_after}** in monthly fan gain."
+    
+    prestige_text = f"{fans_line}\n{monthly_prestige_line}\n{club_rank_line}"
+    embed.add_field(name="📈 Fans & Prestige", value=prestige_text, inline=False)
+    
+    # Add the Fan Exchange section
+    earnings_summary = (
+        f"**Total Earned:** {format_cc(total_earned)}\n"
+        f"**Current Balance:** {format_cc(current_balance)}"
+    )
+    embed.add_field(name="💰 Fan Exchange Summary", value=earnings_summary, inline=False)
 
-    response_message = (f"{ctx.author.mention}, here's your progress from the last **{time_ago_str}**.\n"
-                        f"{fans_line}\n"
-                        f"{monthly_prestige_line}\n"
-                        f"{lifetime_prestige_line}\n"
-                        f"{club_rank_line}")
+    if not user_earnings_df.empty:
+        earnings_breakdown = (
+            f"```\n"
+            f"Performance Yield:   {format_cc(total_performance)}\n"
+            f"Tenure Yield:        {format_cc(total_tenure)}\n"
+            f"Hype Bonus:          {format_cc(total_hype)}\n"
+            f"Sponsorships:        {format_cc(total_sponsorship)}\n"
+            f"```"
+        )
+        embed.add_field(name="📊 Earnings Breakdown (Since Last Check)", value=earnings_breakdown, inline=False)
+
+    await ctx.send(embed=embed, ephemeral=True)
     
-    await ctx.send(response_message, ephemeral=True)
-    
+    # --- Update the last_checked_timestamp ---
     progress_df = progress_df[progress_df['discord_id'] != ctx.author.id]
-    new_entry = pd.DataFrame([{'discord_id': ctx.author.id, 'last_checked_timestamp': after_stats['timestamp']}])
+    new_entry = pd.DataFrame([{'discord_id': ctx.author.id, 'last_checked_timestamp': after_stats['timestamp'].isoformat()}])
     progress_df = pd.concat([progress_df, new_entry], ignore_index=True)
     progress_df.to_csv(PROGRESS_LOG_CSV, index=False)
 
