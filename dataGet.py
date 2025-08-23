@@ -235,8 +235,8 @@ if new_log_entries:
             if not file_exists:
                 writer.writeheader()
             writer.writerows(new_log_entries)
-        print(f"\n--- ✅ Successfully added {len(new_log_entries)} new entries to {output_filename}! ---")
+        print(f"\n--- SUCCESS added {len(new_log_entries)} new entries to {output_filename}! ---")
     except Exception as e:
-        print(f"\n--- ❌ Error writing to {output_filename}: {e} ---")
+        print(f"\n--- ERROR writing to {output_filename}: {e} ---")
 else:
     print("\n--- No new fan counts to log. ---")
