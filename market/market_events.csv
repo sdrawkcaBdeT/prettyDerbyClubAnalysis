@@ -1,12 +1,1 @@
 event_name,description,duration_hours,effect_type,effect_value
-The Gate is Sticky,"A random 20% of members have their ""Player Condition"" multiplier temporarily set to 1.0x.",12,player_condition_neutralize,0.2
-False Start Declared,The lag is rerolled an additional time.,1,lag_reroll,1
-Photo Finish Review,"For members ranked 5th-15th, their Core Value calculation temporarily uses a 6-hour moving average.",24,core_value_avg_change,"{""ranks"": [5, 15], ""new_avg_hours"": 6}"
-The Crowd Roars,"A flat +5% is added to the final stock price of the 5 members who have the most shares owned by other players.",12,price_boost_hyped,0.05
-Jockey Change Announced,Two random players temporarily swap their ""Player Condition"" multipliers.,24,player_condition_swap,2
-Headwind on the Back Stretch,The performance-based prestige component of CC earnings is temporarily halved.,48,performance_yield_nerf,0.5
-Dark Horse Bargains,"The final stock price of the bottom 25% of members is temporarily discounted by 15%.",24,price_discount_underdog,0.15
-Stewards' Tax Holiday,The 3% Broker's Fee is reduced to 0.5% for all transactions.,72,broker_fee_reduction,0.005
-Bumper Crowds,"At the end of each data refresh, 5% of the total CC earned by all players is paid out as a flat bonus to every single member.",24,social_stimulus,0.05
-Sponsor's Showcase,The Sponsorship Dividend is temporarily doubled from 10% to 20%.,48,sponsorship_boost,2.0
-Rival Club in Disarray,A global +15% boost is applied to the Club Sentiment multiplier.,24,sentiment_boost,1.15
