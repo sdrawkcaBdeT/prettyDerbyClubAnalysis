@@ -42,12 +42,12 @@ def get_upgrade_value(upgrades_df, discord_id, upgrade_name, base_value, bonus_p
 def calculate_hype_bonus(portfolios_df, member_name):
     """Calculates the Hype Bonus based on shares owned by others."""
     # Sum shares where the stock name matches, but exclude the owner investing in themselves
-    # Assuming 'investor_discord_id' corresponds to a user who owns 'stock_in_game_name'
-    # This part requires a mapping from in_game_name to discord_id, which is in crew_coins
+    # Assuming 'investor_discord_id' corresponds to a user who owns 'stock_inGameName'
+    # This part requires a mapping from inGameName to discord_id, which is in crew_coins
     
     # For now, we'll just sum all shares owned by others. This can be refined if needed.
     shares_owned_by_others = portfolios_df[
-        portfolios_df['stock_in_game_name'] == member_name
+        portfolios_df['stock_inGameName'] == member_name
     ]['shares_owned'].sum() # Simple sum for now
     
     # Formula: Hype Bonus = 1 + (0.0005 * Total Shares Owned by Others)
@@ -71,12 +71,12 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
     balance_history_records = []
     dividend_payouts = {}
     
-    crew_coins_df.set_index('in_game_name', inplace=True)
+    crew_coins_df.set_index('inGameName', inplace=True)
     
     for _, member in latest_data.iterrows():
-        in_game_name = member['inGameName']
-        if in_game_name not in crew_coins_df.index: continue
-        discord_id = crew_coins_df.loc[in_game_name, 'discord_id']
+        inGameName = member['inGameName']
+        if inGameName not in crew_coins_df.index: continue
+        discord_id = crew_coins_df.loc[inGameName, 'discord_id']
 
         perf_prestige = member.get('performancePrestigePoints', 0)
         tenure_prestige = member.get('tenurePrestigePoints', 0)
@@ -92,13 +92,13 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
         tenure_yield = tenure_prestige * tenure_multiplier
         base_cc_earned = performance_yield + tenure_yield
         
-        hype_bonus_multiplier = calculate_hype_bonus(portfolios_df, in_game_name)
+        hype_bonus_multiplier = calculate_hype_bonus(portfolios_df, inGameName)
         hype_bonus_yield = base_cc_earned * (hype_bonus_multiplier - 1)
         total_personal_cc_earned = base_cc_earned + hype_bonus_yield
         
-        crew_coins_df.loc[in_game_name, 'balance'] += round(total_personal_cc_earned)
+        crew_coins_df.loc[inGameName, 'balance'] += round(total_personal_cc_earned)
 
-        shareholders = portfolios_df[portfolios_df['stock_in_game_name'] == in_game_name]
+        shareholders = portfolios_df[portfolios_df['stock_inGameName'] == inGameName]
         if not shareholders.empty:
             largest_shareholder = shareholders.loc[shareholders['shares_owned'].idxmax()]
             sponsor_discord_id = str(largest_shareholder['investor_discord_id'])
@@ -106,7 +106,7 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
             dividend_payouts[sponsor_discord_id] = dividend_payouts.get(sponsor_discord_id, 0) + sponsorship_dividend
             
         balance_history_records.append({
-            'timestamp': run_timestamp, 'in_game_name': in_game_name, 'discord_id': discord_id,
+            'timestamp': run_timestamp, 'inGameName': inGameName, 'discord_id': discord_id,
             'performance_yield': performance_yield, 'tenure_yield': tenure_yield,
             'hype_bonus_yield': hype_bonus_yield, 'sponsorship_dividend_received': 0,
             'total_period_earnings': total_personal_cc_earned, 'new_balance': 0
@@ -120,8 +120,8 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
             crew_coins_df.loc[target_name, 'balance'] += round(dividend_amount)
 
     for record in balance_history_records:
-        in_game_name = record['in_game_name']
-        final_balance = crew_coins_df.loc[in_game_name, 'balance']
+        inGameName = record['inGameName']
+        final_balance = crew_coins_df.loc[inGameName, 'balance']
         dividend_received = dividend_payouts.get(str(record['discord_id']), 0)
         record['sponsorship_dividend_received'] = dividend_received
         record['total_period_earnings'] += dividend_received

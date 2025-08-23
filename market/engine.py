@@ -96,13 +96,13 @@ def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
             if active_event_name == "Rival Club in Disarray":
                 sentiment_modifier = 1.15
             elif active_event_name == "The Crowd Roars":
-                shares_owned = portfolios_df.groupby('stock_in_game_name')['shares_owned'].sum()
+                shares_owned = portfolios_df.groupby('stock_inGameName')['shares_owned'].sum()
                 top_5_hyped = shares_owned.nlargest(5).index
                 for name in top_5_hyped: event_modifiers['price'][name] = 1.05
             # ... and so on for all other events
             elif active_event_name == "Dark Horse Bargains":
                 bottom_25_percent = stock_prices_df.nsmallest(int(len(stock_prices_df) * 0.25), 'current_price')
-                for name in bottom_25_percent['in_game_name']: event_modifiers['price'][name] = 0.85
+                for name in bottom_25_percent['inGameName']: event_modifiers['price'][name] = 0.85
             elif active_event_name == "The Gate is Sticky":
                 sticky_members = random.sample(member_names, k=int(len(member_names) * 0.20))
                 for name in sticky_members: event_modifiers['condition'][name] = 1.0
@@ -126,7 +126,7 @@ def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
     for name in member_names:
         member_latest_data = enriched_df[enriched_df['inGameName'] == name].iloc[-1]
         prestige = member_latest_data['lifetimePrestige']
-        random_factor_row = init_df[init_df['in_game_name'] == name]
+        random_factor_row = init_df[init_df['inGameName'] == name]
         if random_factor_row.empty: continue
         random_factor = random_factor_row['random_init_factor'].iloc[0]
         
@@ -146,11 +146,16 @@ def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
         final_price = (core_value * player_condition) * price_modifier
         final_price = max(final_price, 0.01)
         
-        updated_prices.append({'in_game_name': name, 'current_price': final_price})
-        price_history_records.append({'timestamp': run_timestamp, 'in_game_name': name, 'price': final_price})
+        updated_prices.append({'inGameName': name, 'current_price': final_price})
+        
+        # Format the timestamp to a clean string without microseconds
+        timestamp_str = run_timestamp.strftime('%Y-%m-%d %H:%M:%S%z')
+        formatted_timestamp = f"{timestamp_str[:-2]}:{timestamp_str[-2:]}"
+        
+        price_history_records.append({'timestamp': formatted_timestamp, 'in_game_name': name, 'price': final_price})        
 
-    new_prices_df = pd.DataFrame(updated_prices).set_index('in_game_name')
-    stock_prices_df = stock_prices_df.set_index('in_game_name')
+    new_prices_df = pd.DataFrame(updated_prices).set_index('inGameName')
+    stock_prices_df = stock_prices_df.set_index('inGameName')
     stock_prices_df['current_price'] = new_prices_df['current_price']
     stock_prices_df['24hr_change'] = 0.0
     

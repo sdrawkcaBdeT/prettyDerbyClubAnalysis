@@ -12,16 +12,16 @@ def initialize_market():
     FILES_TO_CREATE = {
         # --- State Files (Current Status) ---
         'market_state.csv': ['state_name', 'value', 'last_event_check_timestamp'],
-        'crew_coins.csv': ['discord_id', 'in_game_name', 'balance'],
-        'stock_prices.csv': ['in_game_name', 'current_price', '24hr_change'],
-        'portfolios.csv': ['investor_discord_id', 'stock_in_game_name', 'shares_owned'],
+        'crew_coins.csv': ['discord_id', 'inGameName', 'balance'],
+        'stock_prices.csv': ['inGameName', 'current_price', '24hr_change'],
+        'portfolios.csv': ['investor_discord_id', 'stock_inGameName', 'shares_owned'],
         'shop_upgrades.csv': ['discord_id', 'upgrade_name', 'tier'],
         'market_events.csv': ['event_name', 'description', 'duration_hours', 'effect_type', 'effect_value'],
-        'member_initialization.csv': ['in_game_name', 'random_init_factor', 'status', 'ticker'],
+        'member_initialization.csv': ['inGameName', 'random_init_factor', 'status', 'ticker'],
         # --- History & Log Files ---
-        'stock_price_history.csv': ['timestamp', 'in_game_name', 'price'],
+        'stock_price_history.csv': ['timestamp', 'inGameName', 'price'],
         'balance_history.csv': [
-            'timestamp', 'in_game_name', 'discord_id', 'performance_yield', 'tenure_yield',
+            'timestamp', 'inGameName', 'discord_id', 'performance_yield', 'tenure_yield',
             'hype_bonus_yield', 'sponsorship_dividend_received', 'total_period_earnings', 'new_balance'
         ],
         'universal_transaction_log.csv': [
@@ -32,7 +32,7 @@ def initialize_market():
     }
     
     
-    random.seed(57)
+    random.seed(5857)
     
     if not os.path.exists(MARKET_DIR):
         os.makedirs(MARKET_DIR)
@@ -63,30 +63,30 @@ def initialize_market():
 
     # --- Populate other initial files ---
     fan_log_df = pd.read_csv('enriched_fan_log.csv')
-    fan_log_df.rename(columns={'inGameName': 'in_game_name', 'lifetimePrestige': 'total_prestige'}, inplace=True)
+    fan_log_df.rename(columns={'inGameName': 'inGameName', 'lifetimePrestige': 'total_prestige'}, inplace=True)
     registrations_df = pd.read_csv('user_registrations.csv')
     
-    latest_entries = fan_log_df.sort_values('timestamp').groupby('in_game_name').tail(1)
-    member_data = pd.merge(latest_entries, registrations_df, on='in_game_name', how='left')
+    latest_entries = fan_log_df.sort_values('timestamp').groupby('inGameName').tail(1)
+    member_data = pd.merge(latest_entries, registrations_df, on='inGameName', how='left')
 
     crew_coins_records = []
     member_init_records = []
 
     for _, row in member_data.iterrows():
-        in_game_name = row['in_game_name']
+        inGameName = row['inGameName']
         discord_id = row['discord_id']
         total_prestige = row['total_prestige']
 
-        starting_cc = (total_prestige ** 1.03) * 1.57 + 3557
+        starting_cc = (total_prestige ** 1.03) * 1.57 + 7571
         crew_coins_records.append({
             'discord_id': discord_id,
-            'in_game_name': in_game_name,
+            'inGameName': inGameName,
             'balance': int(round(starting_cc))
         })
 
         random_init_factor = random.randint(28, 42)
         member_init_records.append({
-            'in_game_name': in_game_name,
+            'inGameName': inGameName,
             'random_init_factor': random_init_factor,
             'status': 'active',
             'ticker': None
