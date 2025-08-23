@@ -9,7 +9,12 @@ def load_market_data(market_dir='market'):
         return {
             'crew_coins': pd.read_csv(f'{market_dir}/crew_coins.csv', dtype={'discord_id': str}),
             'portfolios': pd.read_csv(f'{market_dir}/portfolios.csv'),
-            'shop_upgrades': pd.read_csv(f'{market_dir}/shop_upgrades.csv', dtype={'discord_id': str})
+            'shop_upgrades': pd.read_csv(f'{market_dir}/shop_upgrades.csv', dtype={'discord_id': str}),
+            'market_state': pd.read_csv(f'{market_dir}/market_state.csv'),
+            'member_initialization': pd.read_csv(f'{market_dir}/member_initialization.csv'),
+            'stock_prices': pd.read_csv(f'{market_dir}/stock_prices.csv'),
+            'shop_upgrades': pd.read_csv(f'{market_dir}/shop_upgrades.csv', dtype={'discord_id': str}),
+            'market_events': pd.read_csv(f'{market_dir}/market_events.csv')
         }
     except FileNotFoundError as e:
         print(f"ERROR: Could not find required market file: {e.filename}")
