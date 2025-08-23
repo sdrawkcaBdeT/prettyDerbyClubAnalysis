@@ -1,0 +1,92 @@
+========== Admin Guide: Monthly Roster & Market Management ==========
+
+This guide outlines the standard operating procedure for
+updating the club roster and the Fan Exchange at the end of
+each month. Following these steps will ensure a smooth
+transition when members are kicked or new members join.
+What Happens Automatically
+
+At the start of a new calendar month, the system is already
+designed to handle the most important change:
+
+    Monthly Prestige Reset: The analysis.py script will
+    automatically reset the monthlyPrestige for all players
+    to zero. This ensures the leaderboards and rank
+    calculations are fresh for the new month. Their
+    lifetimePrestige is not affected.
+
+End-of-Month Workflow
+
+Follow this four-step process when you need to remove and add
+members to the club.
+Step 1: Update the Official Member List
+
+This is the foundational step that defines who is currently
+in the club.
+
+    Open the members.csv file.
+
+    REMOVE the rows corresponding to the in-game names of the
+    kicked members.
+
+    ADD new rows with the exact in-game names of the new
+    members.
+
+    Save the file.
+
+Step 2: De-list Kicked Members from the Fan Exchange
+
+This prevents anyone from buying or selling stock for members
+who are no longer in the club.
+
+    Open the market/member_initialization.csv file.
+
+    Find the rows for the kicked members by their inGameName.
+
+    In the status column for each of those members, change
+    the value from active to inactive.
+
+    Save the file. This effectively de-lists their stock.
+
+Step 3: Onboard New Members
+
+This two-part process creates market accounts for your new
+members.
+
+    User Registration (Action Required by New Members):
+
+        Instruct the new members to use the
+        /register [their-exact-in-game-name] command
+        in Discord.
+
+        This is a mandatory step that adds them to
+        user_registrations.csv and links their Discord ID
+        to their game account.
+
+    Market Initialization (Action Required by Admin):
+
+        From your terminal, run the initialize_market.py script:
+        python initialize_market.py
+
+        This script will intelligently find the newly registered
+        users and create their accounts without affecting any
+        existing members.
+
+Step 4: Run a Full Data Update
+
+This final step integrates the new members into the live market.
+
+    From your terminal, run the main scheduler script with the
+    full_run_once argument:
+    python race_day_scheduler.py full_run_once
+
+    This will:
+
+        Pull the latest fan data for the new members.
+
+        Calculate their initial stock price.
+
+        Update all market stats and leaderboards.
+
+After completing these steps, your market will be perfectly
+synchronized with your new club roster.
