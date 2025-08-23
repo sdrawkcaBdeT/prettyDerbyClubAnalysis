@@ -14,6 +14,7 @@ scripts = {
     # --- Sequences ---
     # Runs the full data collection and analysis pipeline
     "full_run": ["dataGet.py", "validate_data.py", "analysis.py", "generate_visuals.py"],
+    "full_run_once": ["dataGet.py", "validate_data.py", "analysis.py", "generate_visuals.py"],
 }
 
 def wait_for_scheduled_start():
@@ -70,9 +71,14 @@ def run_script(script_paths, sleep_time=0):
 
 
 if __name__ == "__main__":
-    # time.sleep(1000)
     if len(sys.argv) > 1:
-        # User has specified which scripts to run
+        if sys.argv[1] == 'full_run_once':
+            print("--- Starting single 'full_run_once' sequence... ---")
+            success = run_script(scripts['full_run_once'])
+            if not success:
+                sys.exit(1)
+            print("--- 'full_run_once' finished successfully. ---")
+            sys.exit(0)
         try:
             # --- 1. IMMEDIATE INITIAL RUN ---
             print("--- Starting initial run immediately... ---")
