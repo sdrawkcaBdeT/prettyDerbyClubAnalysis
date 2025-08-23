@@ -896,7 +896,8 @@ async def portfolio(ctx):
                     current_price = stock_prices_df.loc[stock_name, 'current_price']
                     value = shares * current_price
                     portfolio_value += value
-                    stock_display += f"**{display_name}**: {shares:,.2f} shares ({format_cc(value)})\n"
+                    # Added the price per share to the display string
+                    stock_display += f"**{display_name}**: {shares:,.2f} shares ({format_cc(value)} at @ {current_price:,.2f} CC)\n"
                 except KeyError:
                     stock_display += f"**{display_name}**: {shares:,.2f} shares (Price data unavailable)\n"
             
@@ -1047,25 +1048,33 @@ async def invest(ctx, member: str, amount: str):
         broker_fee = cc_amount * broker_fee_rate
         shares_purchased = (cc_amount - broker_fee) / current_price
         
-        crew_coins_df.loc[crew_coins_df['discord_id'] == investor_id, 'balance'] -= cc_amount
+        # Calculate the new balance before updating the DataFrame
+        new_balance = investor_balance - cc_amount
+        crew_coins_df.loc[crew_coins_df['discord_id'] == investor_id, 'balance'] = new_balance
+
         existing_holding = portfolios_df[(portfolios_df['investor_discord_id'] == investor_id) & (portfolios_df['stock_in_game_name'] == target_name)]
         if not existing_holding.empty:
             portfolios_df.loc[existing_holding.index, 'shares_owned'] += shares_purchased
         else:
             new_row = pd.DataFrame([{'investor_discord_id': investor_id, 'stock_in_game_name': target_name, 'shares_owned': shares_purchased}])
             portfolios_df = pd.concat([portfolios_df, new_row], ignore_index=True)
-        
+
         crew_coins_df.to_csv('market/crew_coins.csv', index=False)
         portfolios_df.to_csv('market/portfolios.csv', index=False)
         
         target_id_row = crew_coins_df[crew_coins_df['in_game_name'] == target_name]
         target_id = target_id_row['discord_id'].iloc[0] if not target_id_row.empty else 'N/A'
-        
         log_market_transaction(actor_id=investor_id, transaction_type='INVEST', target_id=target_id, item_name=f"{target_name}'s Stock", item_quantity=shares_purchased, cc_amount=-cc_amount, fee_paid=broker_fee)
-        
+
         embed = discord.Embed(title="✅ Investment Successful", color=discord.Color.green())
-        embed.description = f"You invested **{format_cc(cc_amount)}** into **{target_name}**.\nAfter a {broker_fee_rate:.1%} Broker's Fee ({format_cc(broker_fee)}), you purchased **{shares_purchased:,.2f} shares**."
+        embed.description = (
+            f"You invested **{format_cc(cc_amount)}** into **{target_name}**.\n"
+            f"After a {broker_fee_rate:.1%} Broker's Fee ({format_cc(broker_fee)}), you purchased **{shares_purchased:,.2f} shares**."
+        )
+        # Add the new balance to the footer
+        embed.set_footer(text=f"Your new balance is {format_cc(new_balance)}")
         await ctx.send(embed=embed)
+
     finally:
         os.remove(lock_file)
 
