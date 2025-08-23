@@ -43,7 +43,7 @@ def move_error_image(image_filename):
             print(f"  - Quarantined image: {destination_path}")
             return destination_path # Return the new path
         except Exception as e:
-            print(f"  - ❌ ERROR: Could not move {source_path}. Reason: {e}")
+            print(f"  - ERROR: Could not move {source_path}. Reason: {e}")
     else:
         print(f"  - WARNING: Source image not found at {source_path}")
     return source_path # Return original path if move fails
@@ -61,9 +61,9 @@ def log_anomalies_to_csv(anomalies_to_log):
             if not file_exists:
                 writer.writeheader()
             writer.writerows(anomalies_to_log)
-        print(f"--- ✅ Successfully logged {len(anomalies_to_log)} error(s) to {ERROR_LOG_CSV} for manual review. ---")
+        print(f"--- SUCCESS logged {len(anomalies_to_log)} error(s) to {ERROR_LOG_CSV} for manual review. ---")
     except Exception as e:
-        print(f"--- ❌ ERROR: Could not write to {ERROR_LOG_CSV}: {e} ---")
+        print(f"--- ERROR: Could not write to {ERROR_LOG_CSV}: {e} ---")
 
 
 def validate_fan_gains():
@@ -143,11 +143,11 @@ def validate_fan_gains():
             print(f"    - Incorrect Count: {int(current_fan_count):,}")
 
     if anomalies_found:
-        print("\n--- ⚠️ DATA VALIDATION ALERT SUMMARY ---")
+        print("\n--- DATA VALIDATION ALERT SUMMARY ---")
         log_anomalies_to_csv(anomalies_found)
         print("--- Scheduler will continue. Please correct the data in fan_log.csv later. ---")
     else:
-        print("--- ✅ Data validation passed. No negative fan gains found in the latest run. ---")
+        print("--- Data validation PASSED. No negative fan gains found in the latest run. ---")
 
 if __name__ == "__main__":
     validate_fan_gains()
