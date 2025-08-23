@@ -10,7 +10,7 @@ import matplotlib.patheffects as pe
 import matplotlib.font_manager as fm
 from market.economy import load_market_data, process_cc_earnings
 from market.engine import update_all_stock_prices
-from market.events import check_and_trigger_event, clear_expired_events
+from market.events import clear_and_check_events
 
 # --- Configuration ---
 MEMBERS_CSV = 'members.csv'
@@ -159,15 +159,14 @@ def main():
     updated_market_state_df.to_csv('market/market_state.csv', index=False)
     print("Successfully updated stock_prices.csv and logged stock_price_history.csv.")
 
-    # --- 3. Clear Any Events That Just Expired ---
-    # This happens *after* the run, so the event's effects were included in this cycle.
-    print("\n--- Checking for Expired Events ---")
-    clear_expired_events(run_timestamp)
+    # --- 3. Clear Expired Events and Trigger New Ones ---
+    print("\n--- Checking for Market Events ---")
+    new_event_triggered = clear_and_check_events(run_timestamp)
 
-    # --- 4. Check for and Trigger a New Event for the *Next* Cycle ---
-    # This runs last, setting the stage for the next time analysis is performed.
-    print("\n--- Checking for New Events ---")
-    check_and_trigger_event(run_timestamp)
+    # If a new event was triggered, write its name to a flag file for the bot
+    if new_event_triggered:
+        with open('market/new_event.txt', 'w') as f:
+            f.write(new_event_triggered)
     # =================================================================
     
 if __name__ == "__main__":
