@@ -105,8 +105,13 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
             sponsorship_dividend = 0.10 * total_personal_cc_earned
             dividend_payouts[sponsor_discord_id] = dividend_payouts.get(sponsor_discord_id, 0) + sponsorship_dividend
             
+        # Format the timestamp to a clean string without microseconds
+        timestamp_str = run_timestamp.strftime('%Y-%m-%d %H:%M:%S%z')
+        # Manually insert the colon for full consistency
+        formatted_timestamp = f"{timestamp_str[:-2]}:{timestamp_str[-2:]}"
+
         balance_history_records.append({
-            'timestamp': run_timestamp, 'inGameName': inGameName, 'discord_id': discord_id,
+            'timestamp': formatted_timestamp, 'inGameName': inGameName, 'discord_id': discord_id,
             'performance_yield': performance_yield, 'tenure_yield': tenure_yield,
             'hype_bonus_yield': hype_bonus_yield, 'sponsorship_dividend_received': 0,
             'total_period_earnings': total_personal_cc_earned, 'new_balance': 0
