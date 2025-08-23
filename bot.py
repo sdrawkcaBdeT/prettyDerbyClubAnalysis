@@ -332,8 +332,13 @@ async def on_ready():
     """Runs once when the bot successfully connects to Discord."""
     print(f'Success! {bot.user} is online and ready.')
     print('------')
+    # --- FIX: Start both tasks ---
     if not update_ranks_task.is_running():
+        print("Starting scheduled rank update task...")
         update_ranks_task.start()
+    if not check_for_announcements.is_running():
+        print("Starting announcement checking task...")
+        check_for_announcements.start()
 
 @bot.event
 async def on_command_completion(ctx):
@@ -346,6 +351,7 @@ async def on_command_completion(ctx):
 @tasks.loop(minutes=60)
 async def update_ranks_task():
     """Periodically checks and updates member roles based on their prestige rank."""
+    await bot.wait_until_ready()
     print("Running scheduled rank update...")
     
     if not os.path.exists(USER_REGISTRATIONS_CSV):
@@ -406,9 +412,13 @@ async def update_ranks_task():
 # --- NEW BACKGROUND TASK FOR ANNOUNCEMENTS ---
 @tasks.loop(minutes=20) # Checks every 20 minutes
 async def check_for_announcements():
+    # This line ensures the task doesn't run until the bot is fully ready
+    await bot.wait_until_ready()
+    
     announcement_file = "announcements.txt"
     # Check if the file exists and is not empty
     if os.path.exists(announcement_file) and os.path.getsize(announcement_file) > 0:
+        print("Found announcements to send...") # Added for logging
         # We found messages to send
         with open(announcement_file, "r+") as f:
             messages = f.readlines()
