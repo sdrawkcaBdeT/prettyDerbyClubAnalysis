@@ -48,14 +48,14 @@ SHOP_ITEMS = {
     "PERFORMANCE": {
         "p1": {
             "name": "Study Race Tapes",
-            "description": "Increases Performance Yield multiplier by +0.05 per tier.",
+            "description": "Increases Performance Yield multiplier by +0.15 per tier. Multiplier without upgrades (base) is 1.75.",
             "costs": [15000, 40000, 120000],
             "max_tier": 3,
             "type": "upgrade"
         },
         "p2": {
             "name": "Perfect the Starting Gate",
-            "description": "Adds a flat +4 bonus to Performance Prestige before multiplication.",
+            "description": "Adds a flat +3 bonus to Performance Prestige before multiplication. No upgrade (base) value is 2.",
             "costs": [25000, 70000, 200000],
             "max_tier": 3,
             "type": "upgrade"
@@ -64,7 +64,7 @@ SHOP_ITEMS = {
     "TENURE": {
         "t1": {
             "name": "Build Club Morale",
-            "description": "Increases Tenure Yield multiplier by +0.1 per tier.",
+            "description": "Increases Tenure Yield multiplier by +0.2 per tier. No upgrade (base) value is 2.0.",
             "costs": [20000, 60000, 180000],
             "max_tier": 3,
             "type": "upgrade"

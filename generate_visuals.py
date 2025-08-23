@@ -32,7 +32,7 @@ plt.rcParams['figure.dpi'] = 150
 def add_timestamps_to_fig(fig, generated_str):
     """Adds standardized timestamp footers to a matplotlib figure."""
     fig.text(0.92, 0.01, f"GENERATED: {generated_str}", color='white', fontsize=8, va='bottom', ha='right')
-    
+
 
 def generate_visualizations(summary_df, individual_log_df, club_log_df, contribution_df, historical_df, last_updated_str, generated_str, start_date, end_date, daily_summary_df):
     """Creates and saves all the requested charts and logs."""
@@ -77,7 +77,7 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, contribu
         plt.savefig(os.path.join(OUTPUT_DIR, 'monthly_leaderboard.png'))
         plt.close(fig)
         print("  - Saved monthly_leaderboard.png")
-        
+
     # Fan Contribution Chart
     if not contribution_df.empty:
         generate_contribution_chart(contribution_df, last_updated_str, generated_str, start_date, end_date)
@@ -91,7 +91,7 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, contribu
     # --- MODIFIED: This section now generates the new daily summary logs ---
     if not daily_summary_df.empty:
         all_members = summary_df.copy().sort_values('totalMonthlyGain', ascending=False)
-        
+
         print("\n  - Generating DAILY SUMMARY individual logs...")
         for _, member_row in all_members.iterrows():
             member_name = member_row['inGameName']
@@ -101,7 +101,7 @@ def generate_visualizations(summary_df, individual_log_df, club_log_df, contribu
                 filename = f"log_cumulative_{safe_member_name}.png"
                 generate_log_image(member_data, f"Daily Performance Summary: {member_name} | Updated: {last_updated_str}", filename, generated_str, limit=15, is_club_log=False)
         print(f"  - Saved DAILY SUMMARY logs for {len(all_members)} members.")
-    
+
     # --- MODIFIED: Historical Tables ---
     if not historical_df.empty:
         generate_performance_heatmap(historical_df, summary_df, "fan_performance_heatmap.png", generated_str, last_updated_str, start_date, end_date)
@@ -133,31 +133,31 @@ def generate_prestige_leaderboard(individual_log_df, last_updated_str, generated
         width=top_15['monthlyPrestige'],
         color=bar_colors
     )
-    
+
     ax.bar_label(bars, labels=[f"{int(p):,}" for p in top_15['monthlyPrestige']], padding=5, color='white', fontsize=11, weight='bold')
-    
+
     ax.set_xlabel('Total Prestige Points', fontsize=12, color='white')
     ax.set_ylabel('Member', fontsize=12, color='white')
     ax.set_title(f'Prestige Leaderboard | Updated: {last_updated_str}', fontsize=18, weight='bold', loc='left', color='white')
 
     ax.tick_params(axis='x', colors='white')
     ax.tick_params(axis='y', colors='white', labelsize=11)
-    
+
     ax.grid(axis='x', linestyle='--', alpha=0.5)
     ax.grid(axis='y', linestyle='', alpha=0)
-    
+
     # --- 4. Next Rank Line ---
     ranks_df = pd.read_csv('ranks.csv')
     highest_rank_on_chart = top_15['prestigeRank'].iloc[-1]
-    
+
     current_rank_index = ranks_df[ranks_df['rank_name'] == highest_rank_on_chart].index
     if not current_rank_index.empty and current_rank_index[0] + 1 < len(ranks_df):
         next_rank_info = ranks_df.iloc[current_rank_index[0] + 1]
         next_rank_name = next_rank_info['rank_name']
         next_rank_req = next_rank_info['prestige_required']
-        
+
         ax.axvline(x=next_rank_req, color='yellow', linestyle='--', linewidth=2)
-        ax.text(next_rank_req, -0.9, f"Next Rank:\n {next_rank_name} ({next_rank_req:,} Pts)", 
+        ax.text(next_rank_req, -0.9, f"Next Rank:\n {next_rank_name} ({next_rank_req:,} Pts)",
                 color='yellow', ha='right', va='bottom', fontsize=10, weight='bold')
 
     plt.tight_layout(rect=[0.01, 0.01, 0.99, 0.95])
@@ -254,13 +254,13 @@ def generate_member_summary(summary_df, individual_log_df, start_date, end_date,
 def generate_performance_heatmap(historical_df, summary_df, filename, generated_str, last_updated_str, start_date, end_date):
     """Generates the historical performance heatmap for Club and Rank Groups."""
     print("  - Generating historical performance heatmap...")
-    
+
     # --- Data Preparation ---
     summary_df = summary_df.sort_values('totalMonthlyGain', ascending=False).copy()
     summary_df['rank'] = range(1, len(summary_df) + 1)
-    
+
     historical_df = pd.merge(historical_df, summary_df[['inGameName', 'rank']], on='inGameName')
-    
+
     bins = [0, 6, 12, 18, 24, 30]
     labels = ['Ranks 1-6', 'Ranks 7-12', 'Ranks 13-18', 'Ranks 19-24', 'Ranks 25-30']
     historical_df['Rank Group'] = pd.cut(historical_df['rank'], bins=bins, labels=labels, right=True)
@@ -269,37 +269,37 @@ def generate_performance_heatmap(historical_df, summary_df, filename, generated_
     club_total = historical_df.groupby('time_group')['fanGain'].sum()
     rank_groups = historical_df.groupby(['time_group', 'Rank Group'], observed=True)['fanGain'].sum().unstack()
     data_to_plot = pd.concat([pd.DataFrame({'Club': club_total}), rank_groups], axis=1).T.fillna(0)
-    
-    
+
+
     # --- Pacing Calculations ---
     cumulative_gain_before = club_total.cumsum().shift(1).fillna(0)
     time_since_start_before = (club_total.index - start_date).total_seconds() / 3600
     cumulative_rate_before = (cumulative_gain_before / time_since_start_before).where(time_since_start_before > 0, 0)
-    
+
     cumulative_gain_through = club_total.cumsum()
     time_since_start_through = (club_total.index + pd.Timedelta(hours=8) - start_date).total_seconds() / 3600
     cumulative_rate_through = (cumulative_gain_through / time_since_start_through).where(time_since_start_through > 0, 0)
-    
+
     total_month_hours = (end_date - start_date).total_seconds() / 3600
 
     projected_window_gain = (cumulative_rate_before * 8).rename("This Window Proj.")
     projected_eom_gain = (cumulative_rate_through * total_month_hours).rename("End-of-Month Proj.")
-    
+
     data_to_plot = pd.concat([data_to_plot, pd.DataFrame(projected_window_gain).T, pd.DataFrame(projected_eom_gain).T])
-    
+
     # Select only the last 13 columns (time periods) for the plot
     if len(data_to_plot.columns) > 13:
         data_to_plot = data_to_plot.iloc[:, -13:]
 
-    
+
     # --- Rendering ---
     formatted_data = data_to_plot.map(lambda x: f"{x/1000:,.0f}")
 
     time_cols = [col for col in data_to_plot.columns if isinstance(col, pd.Timestamp)]
-    
+
     time_labels = [f"{dt.strftime('%m/%d')}\n{dt.strftime('%H:%M')}-{(dt + pd.Timedelta(hours=7, minutes=59)).strftime('%H:%M')}" for dt in time_cols]
-    
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(max(15, len(time_labels) * 1.2), 10), 
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(max(15, len(time_labels) * 1.2), 10),
                                    gridspec_kw={'height_ratios': [len(data_to_plot)-2, 2], 'hspace': 0.1})
 
     # Top Heatmap (Club & Ranks)
@@ -310,7 +310,7 @@ def generate_performance_heatmap(historical_df, summary_df, filename, generated_
     ax1.xaxis.tick_top()
     ax1.tick_params(axis='x', length=0)
     ax1.tick_params(axis='y', rotation=0, labelsize=13)
-    
+
     # Bottom Heatmap (Pacing)
     sns.heatmap(data_to_plot.iloc[-2:] / 1000, ax=ax2, annot=formatted_data.iloc[-2:], fmt="s", cmap="Blues", cbar=False, linewidths=.5, linecolor='lightgray', annot_kws={"size": 14})
     ax2.set_ylabel('')
@@ -322,12 +322,12 @@ def generate_performance_heatmap(historical_df, summary_df, filename, generated_
     # Add a thick line between the two heatmaps
     ax1.axhline(y=0, color='black', linewidth=2)
     ax1.axhline(y=len(data_to_plot)-2, color='black', linewidth=2)
-    
+
     fig.suptitle(f'Historical Fan Gains (8-Hour Intervals) | Updated: {last_updated_str}', fontsize=18, y=0.98, ha='left', x=0.05)
     fig.text(0.05, 0.945, "Cell values are actual Fan Gains in 1000s.", ha='left', va='center', fontsize=10, style='italic', color='gray')
-             
+
     add_timestamps_to_fig(fig, generated_str)
-    
+
     plt.savefig(os.path.join(OUTPUT_DIR, filename), bbox_inches='tight', pad_inches=0.3)
     plt.close(fig)
     print(f"  - Saved {filename}")
@@ -335,17 +335,17 @@ def generate_performance_heatmap(historical_df, summary_df, filename, generated_
 def generate_contribution_chart(contribution_df, last_updated_str, generated_str, start_date, end_date):
     """Generates the fan contribution by rank group stacked bar chart."""
     print("  - Generating fan contribution chart...")
-    
+
     fig, ax = plt.subplots(figsize=(28, 8))
-    
+
     percentages = contribution_df['percentage']
-    my_hex_colors = ['#d7191c', '#fdae61', '#ffffbf', '#abd9e9', '#2c7bb6'] 
+    my_hex_colors = ['#d7191c', '#fdae61', '#ffffbf', '#abd9e9', '#2c7bb6']
     colors = my_hex_colors[:len(percentages)]
 
     left = 0
     for i, (label, percentage) in enumerate(percentages.items()):
         ax.barh('Monthly Fan Gain', percentage, left=left, label=label, color=colors[i], edgecolor='white')
-        
+
         if percentage > 2:
             ax.text(left + percentage / 2, 0, f'{percentage:.0f}%', ha='center', va='center', color='white', weight='bold', fontsize=20, path_effects=[pe.withStroke(linewidth=4, foreground='black')])
         left += percentage
@@ -362,10 +362,10 @@ def generate_contribution_chart(contribution_df, last_updated_str, generated_str
 
     plt.title(f'Monthly Fan Contribution by Rank Group | Updated: {last_updated_str}', fontsize=24, weight='bold', loc='left', y=1.075)
     ax.legend(title='', bbox_to_anchor=(0.5, 1.075), loc='upper center', ncol=len(percentages), fontsize=16)
-    
+
     time_elapsed = (datetime.now(pytz.timezone('US/Central')) - start_date).total_seconds() / 3600
     time_remaining = (end_date - datetime.now(pytz.timezone('US/Central'))).total_seconds() / 3600
-    
+
     plt.tight_layout(rect=[0, 0.05, 0.95, 0.95])
     add_timestamps_to_fig(fig, generated_str)
     plt.savefig(os.path.join(OUTPUT_DIR, 'fan_contribution_by_rank.png'))
@@ -374,18 +374,19 @@ def generate_contribution_chart(contribution_df, last_updated_str, generated_str
 
 def generate_log_image(log_data, title, filename, generated_str, limit=15, is_club_log=False):
     """Generates and saves a CML-style log as an image from pre-processed daily summary data."""
-    
+
     log_data_limited = log_data.sort_values('timestamp', ascending=False).head(limit)
     if log_data_limited.empty: return
 
-    fig, ax = plt.subplots(figsize=(16, 10))
+    # --- Use a wider figure for individual logs with CC data ---
+    fig_width = 24 if not is_club_log else 16
+    fig, ax = plt.subplots(figsize=(fig_width, 10))
     fig.patch.set_facecolor('#2E2E2E')
     ax.set_facecolor('#2E2E2E')
     ax.set_title(title, color='white', loc='left', pad=20, fontproperties=rankfont, fontsize=16)
 
-    latest_entry = log_data_limited.iloc[0] # Get the most recent day's data for the header
+    latest_entry = log_data_limited.iloc[0]
 
-    # --- START: Add Prestige Header back ---
     if not is_club_log:
         rank = latest_entry.get('rank')
         if pd.notna(rank):
@@ -394,40 +395,43 @@ def generate_log_image(log_data, title, filename, generated_str, limit=15, is_cl
         prestige_rank = latest_entry['prestigeRank']
         total_prestige = latest_entry['monthlyPrestige']
         points_to_next = latest_entry['pointsToNextRank']
-        
+
         header_y = 1.015
         ax.text(0.01, header_y, "Prestige Rank:", color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top')
         ax.text(0.11, header_y, prestige_rank, color='white', fontsize=12, transform=ax.transAxes, va='top')
-        
+
         ax.text(0.36, header_y, "Total Prestige:", color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top')
         ax.text(0.47, header_y, f"{total_prestige:,.0f} Prestige", color='white', fontsize=12, transform=ax.transAxes, va='top')
-        
+
         ax.text(0.71, header_y, "Next Rank:", color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top')
         if pd.notna(points_to_next):
              ax.text(0.80, header_y, f"{points_to_next:,.0f} Points", color='white', fontsize=12, transform=ax.transAxes, va='top')
         else:
              ax.text(0.80, header_y, "Max Rank", color='white', fontsize=12, transform=ax.transAxes, va='top')
-    # --- END: Add Prestige Header back ---
-    
+
     if is_club_log:
         headers = ['Timestamp (CT)', "Day's Fan Gain", "Month's Fans", 'Rank', 'Rank Δ', 'Fans to Rank 100', 'Month Pacing', 'Prestige Gain']
+        header_positions = [0.01, 0.22, 0.36, 0.45, 0.53, 0.65, 0.78, 0.90]
     else:
-        headers = ['Timestamp (CT)', "Day's Fan Gain", "Month's Fans", 'Rank', 'Rank Δ', 'Fans to Next Rank', 'Month Pacing', 'Prestige Gain']
-        
-    header_positions = [0.01, 0.22, 0.36, 0.45, 0.53, 0.65, 0.78, 0.90]
+        headers = ['Timestamp (CT)', "Day's Fan Gain", "Month's Fans", 'Rank', 'Rank Δ', 'Fans to Next', 'Pacing', 'Prestige',
+                   'Perf. Yield', 'Tenure Yield', 'Hype Yield', 'Dividends', 'Total CC']
+        header_positions = [0.01, 0.16, 0.25, 0.32, 0.37, 0.43, 0.49, 0.55,
+                            0.62, 0.70, 0.78, 0.86, 0.94]
+
 
     for i, header in enumerate(headers):
         ax.text(header_positions[i], 0.935, header, color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top', ha='left' if i < 1 else 'center')
 
     y_pos = 0.91
     for _, row in log_data_limited.iterrows():
+        # --- Existing Data ---
         hour = row['timestamp'].strftime('%I').lstrip('0') or '12'
         timestamp_str = f"{hour}:{row['timestamp'].strftime('%M %p %m/%d/%Y')}"
         gain_val = row['dailyFanGain']
         gain_str = f"+{int(gain_val):,}" if gain_val > 0 else str(int(gain_val))
         gain_color = '#4CAF50' if gain_val > 0 else '#BDBDBD'
         month_fans_str = f"{int(row['monthlyFanGain']):,}"
-        
+
         rank_str = f"#{int(row['rank'])}" if isinstance(row['rank'], (int, float)) and pd.notna(row['rank']) else '-'
         rank_delta = row['rank_delta']
         if pd.isna(rank_delta) or rank_delta == 0 or isinstance(rank_delta, str):
@@ -446,6 +450,8 @@ def generate_log_image(log_data, title, filename, generated_str, limit=15, is_cl
         pacing_str = f"{int(row['monthPacing']/1000):,}K"
         prestige_gain_str = f"+{row['dailyPrestigeGain']:.1f}"
 
+
+        # --- Existing Text Rendering ---
         ax.text(header_positions[0], y_pos, timestamp_str, color='#E0E0E0', fontsize=12, transform=ax.transAxes, va='top')
         ax.text(header_positions[1], y_pos, gain_str, color=gain_color, fontsize=12, weight='bold', transform=ax.transAxes, ha='center', va='top')
         ax.text(header_positions[2], y_pos, month_fans_str, color='#E0E0E0', fontsize=12, transform=ax.transAxes, ha='center', va='top')
@@ -455,10 +461,25 @@ def generate_log_image(log_data, title, filename, generated_str, limit=15, is_cl
         ax.text(header_positions[6], y_pos, pacing_str, color='#64B5F6', fontsize=12, weight='bold', transform=ax.transAxes, ha='center', va='top')
         ax.text(header_positions[7], y_pos, prestige_gain_str, color='#FFD700', fontsize=11, transform=ax.transAxes, ha='center', va='top')
 
+        # --- FIX: Only render CC data for individual logs ---
+        if not is_club_log:
+            perf_yield_str = f"{row.get('performance_yield', 0):.0f}"
+            tenure_yield_str = f"{row.get('tenure_yield', 0):.0f}"
+            hype_yield_str = f"{row.get('hype_bonus_yield', 0):.0f}"
+            dividend_str = f"{row.get('sponsorship_dividend_received', 0):.0f}"
+            total_cc_str = f"{row.get('total_period_earnings', 0):.0f}"
+
+            ax.text(header_positions[8], y_pos, perf_yield_str, color='#AED581', fontsize=11, transform=ax.transAxes, ha='center', va='top')
+            ax.text(header_positions[9], y_pos, tenure_yield_str, color='#AED581', fontsize=11, transform=ax.transAxes, ha='center', va='top')
+            ax.text(header_positions[10], y_pos, hype_yield_str, color='#AED581', fontsize=11, transform=ax.transAxes, ha='center', va='top')
+            ax.text(header_positions[11], y_pos, dividend_str, color='#AED581', fontsize=11, transform=ax.transAxes, ha='center', va='top')
+            ax.text(header_positions[12], y_pos, total_cc_str, color='#FFFFFF', fontsize=12, weight='bold', transform=ax.transAxes, ha='center', va='top')
+
+
         y_pos -= (1 / (limit + 5))
 
     add_timestamps_to_fig(fig, generated_str)
-    
+
     ax.axis('off')
     os.makedirs(os.path.join(OUTPUT_DIR, "individual_logs"), exist_ok=True)
     plt.savefig(os.path.join(OUTPUT_DIR, "individual_logs", filename), bbox_inches='tight', pad_inches=0.3, facecolor=fig.get_facecolor())
@@ -469,8 +490,6 @@ def create_all_visuals(members_df, summary_df, individual_log_df, club_log_df, c
     Main function to create and save all visualizations.
     This function is called by analysis.py after the main data processing is complete.
     """
-    # This function now takes the place of the old generate_visualizations function
-    # and calls the other chart-generating functions.
     generate_visualizations(
         summary_df,
         individual_log_df,
@@ -491,24 +510,26 @@ def create_all_visuals(members_df, summary_df, individual_log_df, club_log_df, c
 
     output_gain_file = os.path.join(OUTPUT_DIR, 'fanGainAnalysis_output.csv')
     output_summary_file = os.path.join(OUTPUT_DIR, 'memberSummary_output.csv')
-    
-    # Merge with memberID for the detailed fan gain output
+
     final_csv_df = pd.merge(individual_log_df, members_df[['inGameName', 'memberID']], on='inGameName', how='left')
-    
-    # Merge with the latest rank for each member
+
     latest_ranks = daily_summary_df.loc[daily_summary_df.groupby('inGameName')['timestamp'].idxmax()][['inGameName', 'rank']]
     final_csv_df = pd.merge(final_csv_df, latest_ranks, on='inGameName', how='left')
-    
-    # Define and order the columns for the final output
+
     csv_output_cols = [
         'timestamp', 'memberID', 'inGameName', 'fanCount', 'fanGain',
         'timeDiffMinutes', 'performancePrestigePoints', 'tenurePrestigePoints',
-        'monthlyPrestige', 'prestigeRank', 'pointsToNextRank', 'rank' 
+        'monthlyPrestige', 'prestigeRank', 'pointsToNextRank', 'rank'
     ]
-    
+
+    # Ensure all expected columns exist before trying to select them
+    for col in csv_output_cols:
+        if col not in final_csv_df.columns:
+            final_csv_df[col] = np.nan # Add missing columns with a default value
+
     final_csv_df = final_csv_df[csv_output_cols]
 
-    # Format numeric columns for clarity
+
     numeric_cols_to_format = ['fanGain', 'timeDiffMinutes', 'performancePrestigePoints', 'tenurePrestigePoints', 'monthlyPrestige']
     for col in numeric_cols_to_format:
         if col in final_csv_df.columns:
@@ -518,17 +539,16 @@ def create_all_visuals(members_df, summary_df, individual_log_df, club_log_df, c
             else:
                  final_csv_df[col] = final_csv_df[col].round(2)
 
-    # Save the final CSV files
     final_csv_df.to_csv(output_gain_file, index=False)
     summary_df.to_csv(output_summary_file, index=False)
-    
+
     print(f"  - Saved {output_gain_file}")
     print(f"  - Saved {output_summary_file}")
 
 def get_club_month_window(run_time_ct):
     """Calculates the start and end of the current in-game ranking period."""
     start_date = run_time_ct.replace(day=1, hour=10, minute=0, second=0, microsecond=0)
-    
+
     if run_time_ct.month == 12:
         end_date = start_date.replace(year=start_date.year + 1, month=1, hour=4, minute=59, second=59)
     else:
@@ -546,8 +566,6 @@ def get_club_month_window(run_time_ct):
         start_date = first_month_start
 
     return start_date, end_date
-# In generate_visuals.py
-
 def main():
     """
     Main function to load enriched data and generate all visual and CSV outputs.
@@ -555,20 +573,22 @@ def main():
     """
     print("--- 1. Loading Data for Visualization ---")
     try:
-        # Load the necessary source files
         members_df = pd.read_csv('members.csv')
         ranks_df = pd.read_csv('ranks.csv')
-        # Load our new "Golden Record"
         individual_log_df = pd.read_csv('enriched_fan_log.csv')
-        # Convert timestamp columns back to datetime objects
         individual_log_df['timestamp'] = pd.to_datetime(individual_log_df['timestamp'])
+        # --- FIX: Create the 'date' column for merging ---
+        individual_log_df['date'] = individual_log_df['timestamp'].dt.date
+
+        balance_history_df = pd.read_csv('market/balance_history.csv')
+        balance_history_df['timestamp'] = pd.to_datetime(balance_history_df['timestamp'])
+        balance_history_df['date'] = balance_history_df['timestamp'].dt.date
+
         print("  - Successfully loaded enriched fan log and supporting files.")
     except FileNotFoundError as e:
         print(f"FATAL ERROR: Missing data file {e}. Cannot generate visuals.")
         return
 
-    # --- 2. Re-creating Summary DataFrames ---
-    # This logic is moved from analysis.py
     print("--- 2. Aggregating Data for Reports ---")
     central_tz = pytz.timezone('US/Central')
     generation_ct = datetime.now(central_tz)
@@ -577,7 +597,14 @@ def main():
     last_updated_str = last_updated_ct.strftime('%Y-%m-%d %I:%M %p %Z')
     generated_str = generation_ct.strftime('%Y-%m-%d %I:%M %p %Z')
 
-    # Re-create daily_summary_df
+    daily_cc_summary_df = balance_history_df.groupby(['inGameName', 'date']).agg(
+        performance_yield=('performance_yield', 'sum'),
+        tenure_yield=('tenure_yield', 'sum'),
+        hype_bonus_yield=('hype_bonus_yield', 'sum'),
+        sponsorship_dividend_received=('sponsorship_dividend_received', 'sum'),
+        total_period_earnings=('total_period_earnings', 'sum')
+    ).reset_index()
+
     daily_summary_df = individual_log_df.groupby(['inGameName', 'date']).agg(
         dailyFanGain=('fanGain', 'sum'),
         dailyPrestigeGain=('prestigeGain', 'sum'),
@@ -587,6 +614,12 @@ def main():
         ['inGameName', 'date', 'monthlyPrestige', 'prestigeRank', 'pointsToNextRank']
     ]
     daily_summary_df = pd.merge(daily_summary_df, prestige_info, on=['inGameName', 'date'])
+
+    daily_summary_df = pd.merge(daily_summary_df, daily_cc_summary_df, on=['inGameName', 'date'], how='left')
+    cc_cols = ['performance_yield', 'tenure_yield', 'hype_bonus_yield', 'sponsorship_dividend_received', 'total_period_earnings']
+    daily_summary_df[cc_cols] = daily_summary_df[cc_cols].fillna(0)
+
+
     daily_summary_df['timestamp'] = pd.to_datetime(daily_summary_df['timestamp']) # Ensure datetime type
     daily_summary_df = daily_summary_df.sort_values(by=['inGameName', 'date'])
     daily_summary_df['monthlyFanGain'] = daily_summary_df.groupby('inGameName')['dailyFanGain'].cumsum()
@@ -604,7 +637,6 @@ def main():
     fans_per_hour = (daily_summary_df['monthlyFanGain'] / time_elapsed_hrs).replace([np.inf, -np.inf], 0).fillna(0)
     daily_summary_df['monthPacing'] = daily_summary_df['monthlyFanGain'] + (fans_per_hour * time_remaining_hrs)
 
-    # Re-create daily_club_summary_df
     daily_club_summary_list = []
     club_daily_groups = individual_log_df.groupby('date')
     for date, group in club_daily_groups:
@@ -624,11 +656,9 @@ def main():
         })
     daily_club_summary_df = pd.DataFrame(daily_club_summary_list)
 
-    # Re-create summary_df (formerly member_summary_df)
     summary_df = daily_summary_df.loc[daily_summary_df.groupby('inGameName')['timestamp'].idxmax()].copy()
     summary_df.rename(columns={'monthlyFanGain': 'totalMonthlyGain'}, inplace=True)
-    
-    # Re-create contribution_df
+
     summary_with_ranks = summary_df.sort_values('totalMonthlyGain', ascending=False).copy()
     summary_with_ranks['rank'] = range(1, len(summary_with_ranks) + 1)
     bins = [0, 6, 12, 18, 24, 30]
@@ -639,8 +669,7 @@ def main():
     contribution_df['percentage'] = (contribution_df['totalMonthlyGain'] / total_club_gain) * 100 if total_club_gain > 0 else 0
     contribution_df = contribution_df.set_index('Rank Group')
 
-    # Re-create historical_df
-    historical_df = individual_log_df.copy() # Since we're only looking at the current month
+    historical_df = individual_log_df.copy() 
     historical_df['time_group'] = historical_df['timestamp'].dt.floor('8h')
     print("  - All data successfully aggregated.")
 

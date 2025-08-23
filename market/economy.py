@@ -81,9 +81,14 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
         perf_prestige = member.get('performancePrestigePoints', 0)
         tenure_prestige = member.get('tenurePrestigePoints', 0)
         
-        perf_multiplier = get_upgrade_value(shop_upgrades_df, discord_id, "Study Race Tapes", 1.25, 0.05)
-        perf_flat_bonus = get_upgrade_value(shop_upgrades_df, discord_id, "Perfect the Starting Gate", 0, 4)
-        tenure_multiplier = get_upgrade_value(shop_upgrades_df, discord_id, "Build Club Morale", 1.50, 0.1)
+        # Increased performance multiplier from 1.25 to 1.75
+        perf_multiplier = get_upgrade_value(shop_upgrades_df, discord_id, "Study Race Tapes", 1.75, 0.15)
+        
+        # Increased flat bonus from 0 to 2
+        perf_flat_bonus = get_upgrade_value(shop_upgrades_df, discord_id, "Perfect the Starting Gate", 2, 3)
+        
+        # Increased tenure multiplier from 1.50 to 2.0
+        tenure_multiplier = get_upgrade_value(shop_upgrades_df, discord_id, "Build Club Morale", 2.0, 0.2)
         
         performance_yield = (perf_prestige + perf_flat_bonus) * perf_multiplier
         # Apply the event modifier
@@ -102,7 +107,8 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
         if not shareholders.empty:
             largest_shareholder = shareholders.loc[shareholders['shares_owned'].idxmax()]
             sponsor_discord_id = str(largest_shareholder['investor_discord_id'])
-            sponsorship_dividend = 0.10 * total_personal_cc_earned
+            # Increased the sponsorship dividend from 10% to 25%
+            sponsorship_dividend = 0.25 * total_personal_cc_earned
             dividend_payouts[sponsor_discord_id] = dividend_payouts.get(sponsor_discord_id, 0) + sponsorship_dividend
             
         # Format the timestamp to a clean string without microseconds
