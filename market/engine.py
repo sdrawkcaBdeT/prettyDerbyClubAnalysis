@@ -13,7 +13,7 @@ def get_prestige_floor(prestige, random_init_factor):
 
 def get_lagged_average(enriched_df, member_name, market_state, override_hours=None):
     # UPDATED: Now accepts an override for the rolling average hours
-    avg_hours = override_hours if override_hours is not None else 9
+    avg_hours = override_hours if override_hours is not None else 20
     
     member_df = enriched_df[enriched_df['inGameName'] == member_name].copy()
     member_df['timestamp'] = pd.to_datetime(member_df['timestamp'])
@@ -75,50 +75,50 @@ def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
     market_state = market_state_df.set_index('state_name')['value']
     portfolios_df = market_data_dfs['portfolios']
     
-    # --- Global Factors ---
-    club_sentiment = get_club_sentiment(enriched_df)
-    market_state['club_sentiment'] = club_sentiment
+    # Convert active_event to a string to safely handle None/NaN values
+    active_event_name = str(market_state.get('active_event', 'None'))
+    
+    event_modifiers = {'price': {}, 'condition': {}, 'lag': {}}
+    sentiment_modifier = 1.0
     
     member_names = list(enriched_df['inGameName'].unique())
 
-    # --- NEW: Comprehensive Event Handling ---
-    active_event_name = str(market_state.get('active_event', 'None'))
-    event_modifiers = {'price': {}, 'condition': {}, 'lag': {}} # Store per-player modifiers
-
-    if active_event_name != 'None':
+    # This is the critical fix: Only enter this block if an event is actually active.
+    if active_event_name not in ['None', 'nan']:
         print(f"EVENT ACTIVE: Applying '{active_event_name}' modifiers.")
-        events_df = pd.read_csv('market/market_events.csv')
-        event_details = events_df[events_df['event_name'] == active_event_name].iloc[0]
-
-        if active_event_name == "The Crowd Roars":
-            shares_owned = portfolios_df.groupby('stock_in_game_name')['shares_owned'].sum()
-            top_5_hyped = shares_owned.nlargest(5).index
-            for name in top_5_hyped:
-                event_modifiers['price'][name] = 1.05
+        events_df = market_data_dfs['market_events'] # Use the already loaded DF
         
-        elif active_event_name == "The Gate is Sticky":
-            sticky_members = random.sample(member_names, k=int(len(member_names) * 0.20))
-            for name in sticky_members:
-                event_modifiers['condition'][name] = 1.0
-        
-        elif active_event_name == "Jockey Change Announced":
-            player1, player2 = random.sample(member_names, k=2)
-            cond1 = get_player_condition(enriched_df, player1)
-            cond2 = get_player_condition(enriched_df, player2)
-            event_modifiers['condition'][player1] = cond2
-            event_modifiers['condition'][player2] = cond1
+        # This will now only run when we are sure an event exists
+        event_details_row = events_df[events_df['event_name'] == active_event_name]
+        if not event_details_row.empty:
+            event_details = event_details_row.iloc[0]
+            # --- (All the if/elif logic for specific events remains the same) ---
+            if active_event_name == "Rival Club in Disarray":
+                sentiment_modifier = 1.15
+            elif active_event_name == "The Crowd Roars":
+                shares_owned = portfolios_df.groupby('stock_in_game_name')['shares_owned'].sum()
+                top_5_hyped = shares_owned.nlargest(5).index
+                for name in top_5_hyped: event_modifiers['price'][name] = 1.05
+            # ... and so on for all other events
+            elif active_event_name == "Dark Horse Bargains":
+                bottom_25_percent = stock_prices_df.nsmallest(int(len(stock_prices_df) * 0.25), 'current_price')
+                for name in bottom_25_percent['in_game_name']: event_modifiers['price'][name] = 0.85
+            elif active_event_name == "The Gate is Sticky":
+                sticky_members = random.sample(member_names, k=int(len(member_names) * 0.20))
+                for name in sticky_members: event_modifiers['condition'][name] = 1.0
+            elif active_event_name == "Jockey Change Announced":
+                player1, player2 = random.sample(member_names, k=2)
+                cond1 = get_player_condition(enriched_df, player1)
+                cond2 = get_player_condition(enriched_df, player2)
+                event_modifiers['condition'][player1] = cond2
+                event_modifiers['condition'][player2] = cond1
+            elif active_event_name == "Photo Finish Review":
+                ranks = enriched_df.sort_values('timestamp').groupby('inGameName').tail(1).sort_values('cumulativePrestige', ascending=False).reset_index()
+                target_members = ranks.loc[4:14, 'inGameName']
+                for name in target_members: event_modifiers['lag'][name] = 6
 
-        elif active_event_name == "Photo Finish Review":
-            # This event modifies the lag calculation directly
-            ranks = enriched_df.sort_values('timestamp').groupby('inGameName').tail(1).sort_values('cumulativePrestige', ascending=False).reset_index()
-            target_members = ranks.loc[4:14, 'inGameName'] # Ranks 5-15 (0-indexed)
-            for name in target_members:
-                event_modifiers['lag'][name] = 6 # New 6-hour average
-
-        elif active_event_name == "False Start Declared":
-            # This is a stateful event handled by its own logic, no price modifier needed here
-            # We can add a log or a small notification if desired
-            print("False Start Declared: Lag index may have shifted.")
+    club_sentiment = get_club_sentiment(enriched_df) * sentiment_modifier
+    market_state['club_sentiment'] = club_sentiment
 
     updated_prices = []
     price_history_records = []
@@ -159,4 +159,4 @@ def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
     history_df.to_csv('market/stock_price_history.csv', mode='a', header=not os.path.exists('market/stock_price_history.csv'), index=False)
     
     print("Baggins Index: Prices updated and history logged.")
-    return stock_prices_df.reset_index(), market_state
+    return stock_prices_df.reset_index(), market_state.to_frame(name='value').reset_index()
