@@ -510,20 +510,16 @@ async def myprogress(ctx):
     """Provides a personalized progress report since the user's last request."""
     in_game_name = get_in_game_name(ctx.author.id)
     if not in_game_name:
-        await ctx.send("You need to register your in-game name first! Use the command: `/register [your-exact-in-game-name]`", ephemeral=True)
+        await ctx.send("You need to register first! Use `/register [your-exact-in-game-name]`", ephemeral=True)
         return
     
     try:
         ranks_df = pd.read_csv(RANKS_CSV)
         enriched_df = pd.read_csv(ENRICHED_FAN_LOG_CSV)
         enriched_df['timestamp'] = pd.to_datetime(enriched_df['timestamp'])
-        
-        if os.path.exists(PROGRESS_LOG_CSV):
-            progress_df = pd.read_csv(PROGRESS_LOG_CSV)
-        else:
-            progress_df = pd.DataFrame(columns=['discord_id', 'last_checked_timestamp'])
+        progress_df = pd.read_csv(PROGRESS_LOG_CSV) if os.path.exists(PROGRESS_LOG_CSV) else pd.DataFrame(columns=['discord_id', 'last_checked_timestamp'])
     except FileNotFoundError as e:
-        await ctx.send(f"Sorry, I'm missing a required data file (`{e.filename}`). Please run the analysis first.", ephemeral=True)
+        await ctx.send(f"Missing a data file (`{e.filename}`). Please run the analysis.", ephemeral=True)
         return
 
     user_analysis_df = enriched_df[enriched_df['inGameName'] == in_game_name].sort_values('timestamp')
@@ -533,68 +529,52 @@ async def myprogress(ctx):
 
     last_checked_entry = progress_df[progress_df['discord_id'] == ctx.author.id]
     last_checked_timestamp = pd.to_datetime(last_checked_entry.iloc[0]['last_checked_timestamp']) if not last_checked_entry.empty else user_analysis_df.iloc[0]['timestamp']
-
-    current_time_utc = datetime.now(pytz.utc)
-    last_checked_timestamp_utc = last_checked_timestamp.tz_convert('UTC')
-    time_since_last_check = current_time_utc - last_checked_timestamp_utc
-
+    
+    time_since_last_check = datetime.now(pytz.utc) - last_checked_timestamp.tz_convert('UTC')
     progress_period_df = user_analysis_df[user_analysis_df['timestamp'] > last_checked_timestamp]
     
-    if not progress_period_df.empty:
-        before_stats = user_analysis_df[user_analysis_df['timestamp'] <= last_checked_timestamp].iloc[-1]
-    else:
-        before_stats = user_analysis_df.iloc[-1]
-
+    before_stats = user_analysis_df[user_analysis_df['timestamp'] <= last_checked_timestamp].iloc[-1] if not progress_period_df.empty else user_analysis_df.iloc[-1]
     after_stats = user_analysis_df.iloc[-1]
 
     fans_gained = progress_period_df['fanGain'].sum()
-    prestige_gained = after_stats['cumulativePrestige'] - before_stats['cumulativePrestige']
+    lifetime_prestige_gained = after_stats['lifetimePrestige'] - before_stats['lifetimePrestige']
     
     rank_before = get_club_rank(enriched_df, last_checked_timestamp, in_game_name)
     rank_after = get_club_rank(enriched_df, after_stats['timestamp'], in_game_name)
     rank_change = (rank_before - rank_after) if rank_before and rank_after else 0
     
-    # --- Re-implement EOM Projection Calculation ---    
-    # Get the start and end dates of the current club month
     start_date, end_date = get_club_month_window(datetime.now(pytz.timezone('US/Central')))
-    
-    # Filter the user's logs for the current month
     user_monthly_logs = user_analysis_df[(user_analysis_df['timestamp'] >= start_date) & (user_analysis_df['timestamp'] <= end_date)]
     
+    eom_projection = 0
     if not user_monthly_logs.empty:
-        first_log = user_monthly_logs.iloc[0]
-        latest_log = user_monthly_logs.iloc[-1]
-        
+        first_log, latest_log = user_monthly_logs.iloc[0], user_monthly_logs.iloc[-1]
         fan_contribution = latest_log['fanCount'] - first_log['fanCount']
-        
         hrs_elapsed = (latest_log['timestamp'] - first_log['timestamp']).total_seconds() / 3600
         fans_per_hour = fan_contribution / hrs_elapsed if hrs_elapsed > 0 else 0
-        
         hrs_remaining = (end_date - latest_log['timestamp']).total_seconds() / 3600
-        
         eom_projection = fan_contribution + (fans_per_hour * hrs_remaining)
-    else:
-        eom_projection = 0
 
     time_ago_str = format_timedelta_ddhhmm(time_since_last_check)
-    fans_line = f"**Fans:** You've earned **{fans_gained:,.0f}** fans. Your end-of-month projection is **{eom_projection:,.0f}**."
+    fans_line = f"**Fans:** You've gained **{fans_gained:,.0f}** fans. Your EOM projection is **{eom_projection:,.0f}**."
     
     next_rank_index = ranks_df[ranks_df['rank_name'] == after_stats['prestigeRank']].index
     next_rank_name = "Max Rank"
     if not next_rank_index.empty and next_rank_index[0] + 1 < len(ranks_df):
         next_rank_name = ranks_df.iloc[next_rank_index[0] + 1]['rank_name']
         
-    prestige_line = f"**Prestige:** You've gained **{prestige_gained:,.2f}** prestige. You're **{after_stats['pointsToNextRank']:,.2f}** points from reaching **{next_rank_name}**."
+    # --- UPDATED (Task 3.1) ---
+    monthly_prestige_line = f"**Monthly Prestige:** You have **{after_stats['monthlyPrestige']:,.2f}** this month. You need **{after_stats['pointsToNextRank']:,.2f}** more for **{next_rank_name}**."
+    lifetime_prestige_line = f"**Lifetime Prestige:** You gained **{lifetime_prestige_gained:,.2f}**, bringing your total to **{after_stats['lifetimePrestige']:,.2f}**."
     
     rank_change_str = f"moved up **{abs(rank_change)}** spots" if rank_change > 0 else (f"moved down **{abs(rank_change)}** spots" if rank_change < 0 else "held your ground")
-    club_rank_line = f"**Club Rank:** You've {rank_change_str} and are now ranked **#{rank_after}** in the club for monthly fan gain."
+    club_rank_line = f"**Club Rank:** You've {rank_change_str} and are now **#{rank_after}** in monthly fan gain."
 
-    response_message = (
-        f"{ctx.author.mention}, here's your progress report since you last checked in **{time_ago_str}** ago.\n"
-        f"{fans_line}\n"
-        f"{prestige_line}\n"
-        f"{club_rank_line}\n"
-    )
+    response_message = (f"{ctx.author.mention}, here's your progress from the last **{time_ago_str}**.\n"
+                        f"{fans_line}\n"
+                        f"{monthly_prestige_line}\n"
+                        f"{lifetime_prestige_line}\n"
+                        f"{club_rank_line}")
     
     await ctx.send(response_message, ephemeral=True)
     
@@ -770,18 +750,14 @@ async def buy(ctx, item_id: str):
     user_id = str(ctx.author.id)
     item_id = item_id.lower()
 
-    # --- Find the Item ---
     item_details = None
-    if item_id in SHOP_ITEMS['PRESTIGE']:
-        item_details = SHOP_ITEMS['PRESTIGE'][item_id]
-    else:
-        for category in ['PERFORMANCE', 'TENURE']:
-            if item_id in SHOP_ITEMS[category]:
-                item_details = SHOP_ITEMS[category][item_id]
-                break
+    for category in SHOP_ITEMS.values():
+        if item_id in category:
+            item_details = category[item_id]
+            break
     
     if not item_details:
-        await ctx.send("Invalid item ID. Please use the IDs listed in the `/shop` command.", ephemeral=True)
+        await ctx.send("Invalid item ID. Use `/shop` to see available items.", ephemeral=True)
         return
 
     lock_file = 'market/market.lock'
@@ -793,7 +769,6 @@ async def buy(ctx, item_id: str):
     try:
         crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
         upgrades_df = load_market_file('shop_upgrades.csv', dtype={'discord_id': str})
-
         user_data_row = crew_coins_df[crew_coins_df['discord_id'] == user_id]
         if user_data_row.empty:
             await ctx.send("You must be registered to make purchases.", ephemeral=True)
@@ -801,22 +776,17 @@ async def buy(ctx, item_id: str):
         
         balance = float(user_data_row['balance'].iloc[0])
         in_game_name = user_data_row['in_game_name'].iloc[0]
-        cost = 0
         
-        # --- Handle Purchase Logic ---
         if item_details['type'] == 'upgrade':
-            # ... (this logic remains the same as before) ...
             upgrade_name = item_details['name']
             user_upgrade_row = upgrades_df[(upgrades_df['discord_id'] == user_id) & (upgrades_df['upgrade_name'] == upgrade_name)]
-            current_tier = 0
-            if not user_upgrade_row.empty:
-                current_tier = user_upgrade_row['tier'].iloc[0]
+            current_tier = user_upgrade_row['tier'].iloc[0] if not user_upgrade_row.empty else 0
             if current_tier >= item_details['max_tier']:
-                await ctx.send(f"You have already reached the max tier for **{upgrade_name}**.", ephemeral=True)
+                await ctx.send(f"You have reached the max tier for **{upgrade_name}**.", ephemeral=True)
                 return
             cost = item_details['costs'][current_tier]
             if balance < cost:
-                await ctx.send(f"You don't have enough Crew Coins. You need {format_cc(cost)}.", ephemeral=True)
+                await ctx.send(f"You need {format_cc(cost)}.", ephemeral=True)
                 return
             if not user_upgrade_row.empty:
                 upgrades_df.loc[user_upgrade_row.index, 'tier'] += 1
@@ -828,40 +798,29 @@ async def buy(ctx, item_id: str):
         elif item_details['type'] == 'prestige':
             enriched_df = load_market_file('enriched_fan_log.csv')
             latest_stats = enriched_df[enriched_df['inGameName'] == in_game_name].sort_values('timestamp').iloc[-1]
-            current_prestige = latest_stats['cumulativePrestige']
-            
+            # --- UPDATED (Task 3.2) ---
+            current_lifetime_prestige = latest_stats['lifetimePrestige']
             amount_to_buy = item_details['amount']
-            cost = calculate_prestige_bundle_cost(current_prestige, amount_to_buy)
+            cost = calculate_prestige_bundle_cost(current_lifetime_prestige, amount_to_buy)
 
             if balance < cost:
-                await ctx.send(f"You don't have enough Crew Coins. You need {format_cc(cost)}.", ephemeral=True)
+                await ctx.send(f"You need {format_cc(cost)}.", ephemeral=True)
                 return
 
             new_prestige_row = latest_stats.copy()
             new_prestige_row['timestamp'] = datetime.now(pytz.timezone('US/Central')).isoformat()
             new_prestige_row['prestigeGain'] = float(amount_to_buy)
-            new_prestige_row['cumulativePrestige'] += float(amount_to_buy)
+            new_prestige_row['lifetimePrestige'] += float(amount_to_buy)
+            new_prestige_row['monthlyPrestige'] = latest_stats['monthlyPrestige'] # Monthly is unaffected
             new_prestige_row['performancePrestigePoints'] = 0
             new_prestige_row['tenurePrestigePoints'] = 0
-            
             enriched_df = pd.concat([enriched_df, new_prestige_row.to_frame().T], ignore_index=True)
             enriched_df.to_csv('enriched_fan_log.csv', index=False)
 
-        # --- Update Balance and Log ---
         crew_coins_df.loc[crew_coins_df['discord_id'] == user_id, 'balance'] -= cost
         crew_coins_df.to_csv('market/crew_coins.csv', index=False)
-        
-        log_market_transaction(
-            actor_id=user_id, transaction_type='PURCHASE', target_id='SYSTEM',
-            item_name=item_details['name'], item_quantity=1,
-            cc_amount=-cost, fee_paid=0
-        )
-
-        await ctx.send(embed=discord.Embed(
-            title="✅ Purchase Successful!",
-            description=f"You spent **{format_cc(cost)}** to acquire **{item_details['name']}**.",
-            color=discord.Color.green()
-        ))
+        log_market_transaction(user_id, 'PURCHASE', 'SYSTEM', item_details['name'], 1, -cost, 0)
+        await ctx.send(embed=discord.Embed(title="✅ Purchase Successful!", description=f"You spent **{format_cc(cost)}** on **{item_details['name']}**.", color=discord.Color.green()))
     finally:
         os.remove(lock_file)
 

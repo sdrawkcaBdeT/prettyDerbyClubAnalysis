@@ -168,3 +168,4 @@ data_validation_errors.csv
 fan_log.csv
 dataGet/data/scan_id.csv
 >>>>>>> becad88 (gitignore)
+backup/fan_log_202508181633.csv

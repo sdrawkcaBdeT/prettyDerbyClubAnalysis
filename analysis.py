@@ -89,44 +89,54 @@ def main():
 
     print("\n--- 2. Performing Core Analysis ---")
 
+    # Sort all data by timestamp before doing any calculations
+    fanlog_df = fanlog_df.sort_values(by=['inGameName', 'timestamp'])
+
+    # --- Prestige Calculations (Task 1.1) ---
+    fanlog_df['previousFanCount'] = fanlog_df.groupby('inGameName')['fanCount'].shift(1)
+    fanlog_df['fanGain'] = fanlog_df['fanCount'] - fanlog_df['previousFanCount']
+    fanlog_df['fanGain'].fillna(0, inplace=True)
+    
+    fanlog_df['timeDiffMinutes'] = fanlog_df.groupby('inGameName')['timestamp'].diff().dt.total_seconds() / 60
+    fanlog_df['timeDiffMinutes'].fillna(0, inplace=True)
+    fanlog_df['performancePrestigePoints'] = fanlog_df['fanGain'] / 8333
+    fanlog_df['tenurePrestigePoints'] = 20 * (fanlog_df['timeDiffMinutes'] / 1440)
+    fanlog_df['prestigeGain'] = fanlog_df['performancePrestigePoints'] + fanlog_df['tenurePrestigePoints']
+
+    # --- NEW: Dual-Track Prestige Calculation (Task 1.2 & 1.3) ---
+    # Lifetime Prestige: Cumulative sum over all time for each member
+    fanlog_df['lifetimePrestige'] = fanlog_df.groupby('inGameName')['prestigeGain'].cumsum()
+
+    # Monthly Prestige: Cumulative sum within the current month window
     monthly_fan_log = fanlog_df[(fanlog_df['timestamp'] >= start_date) & (fanlog_df['timestamp'] <= end_date)].copy()
-    monthly_fan_log = monthly_fan_log.sort_values(by=['inGameName', 'timestamp'])
-
-    monthly_fan_log['previousFanCount'] = monthly_fan_log.groupby('inGameName')['fanCount'].shift(1)
-    monthly_fan_log['fanGain'] = monthly_fan_log['fanCount'] - monthly_fan_log['previousFanCount']
-    monthly_fan_log['fanGain'].fillna(0, inplace=True)
+    monthly_fan_log['monthlyPrestige'] = monthly_fan_log.groupby('inGameName')['prestigeGain'].cumsum()
     
-    individual_log_df = monthly_fan_log.copy() # We still need this for some calculations
-    
-    # --- Prestige Calculations ---
-    individual_log_df['timeDiffMinutes'] = monthly_fan_log.groupby('inGameName')['timestamp'].diff().dt.total_seconds() / 60
-    individual_log_df['timeDiffMinutes'].fillna(0, inplace=True)
-    individual_log_df['performancePrestigePoints'] = individual_log_df['fanGain'] / 8333
-    individual_log_df['tenurePrestigePoints'] = 20 * (individual_log_df['timeDiffMinutes'] / 1440)
-    individual_log_df['prestigeGain'] = individual_log_df['performancePrestigePoints'] + individual_log_df['tenurePrestigePoints']
-    individual_log_df['cumulativePrestige'] = individual_log_df.groupby('inGameName')['prestigeGain'].cumsum()
+    # Merge monthly prestige back into the main dataframe
+    fanlog_df = pd.merge(fanlog_df, monthly_fan_log[['inGameName', 'timestamp', 'monthlyPrestige']], on=['inGameName', 'timestamp'], how='left')
+    fanlog_df['monthlyPrestige'].fillna(0, inplace=True) # Fill prestige for entries outside the current month
 
-    # This block calculates the rank name based on prestige points
+    # This block calculates the rank name based on monthly prestige points (Task 1.4)
     ranks_df_sorted = ranks_df.sort_values('prestige_required', ascending=False)
-    def get_rank_details(cumulative_prestige):
+    def get_rank_details(monthly_prestige):
         for _, rank_row in ranks_df_sorted.iterrows():
-            if cumulative_prestige >= rank_row['prestige_required']:
+            if monthly_prestige >= rank_row['prestige_required']:
                 return rank_row['rank_name']
         return "Unranked"
-    individual_log_df['prestigeRank'] = individual_log_df['cumulativePrestige'].apply(get_rank_details)
+    fanlog_df['prestigeRank'] = fanlog_df['monthlyPrestige'].apply(get_rank_details)
 
     # This block calculates the points needed for the next rank
     next_rank_req = ranks_df.set_index('rank_name')['prestige_required'].shift(-1).to_dict()
     def get_points_to_next_rank(row):
         current_rank = row['prestigeRank']
         if current_rank in next_rank_req and pd.notna(next_rank_req[current_rank]):
-            return next_rank_req[current_rank] - row['cumulativePrestige']
+            return next_rank_req[current_rank] - row['monthlyPrestige']
         return np.nan
-    individual_log_df['pointsToNextRank'] = individual_log_df.apply(get_points_to_next_rank, axis=1)
-    individual_log_df['date'] = individual_log_df['timestamp'].dt.date
+    fanlog_df['pointsToNextRank'] = fanlog_df.apply(get_points_to_next_rank, axis=1)
+    fanlog_df['date'] = fanlog_df['timestamp'].dt.date
     
-    print("\n--- 3. Saving Enriched Fan Log ---")
-    individual_log_df.to_csv('enriched_fan_log.csv', index=False)
+    print("\n--- 3. Saving Enriched Fan Log (Task 1.5) ---")
+    # Note: The old 'cumulativePrestige' column is no longer here
+    fanlog_df.to_csv('enriched_fan_log.csv', index=False)
     print("  - Successfully created enriched_fan_log.csv")
     
     # =================================================================
@@ -134,40 +144,32 @@ def main():
     # =================================================================
     print("\n--- Processing Fan Exchange ---")
     
-    # Use the timestamp from when the report was generated for consistent logging
     run_timestamp = generation_ct 
 
-    # --- 1. Load Initial Market Data ---
-    # The state is loaded once at the beginning of the process.
     initial_market_data = load_market_data()
     if not initial_market_data:
         print("FATAL: Could not load market data. Halting Fan Exchange processing.")
         return
 
-    # --- 2. Process CC Earnings & Update Stock Prices using the current event state ---
-    # These functions will use the event that was active when the script started.
     print("Running CC Earnings Engine...")
-    updated_crew_coins_df = process_cc_earnings(individual_log_df, initial_market_data, run_timestamp)
+    updated_crew_coins_df = process_cc_earnings(fanlog_df, initial_market_data, run_timestamp)
     updated_crew_coins_df['balance'] = updated_crew_coins_df['balance'].round().astype(int)
     updated_crew_coins_df.to_csv('market/crew_coins.csv', index=False)
     print("Successfully updated crew_coins.csv and logged balance_history.csv.")
 
     print("\nRunning Baggins Index Price Engine...")
     all_market_dfs = {**initial_market_data, 'crew_coins': updated_crew_coins_df}
-    updated_stocks_df, updated_market_state_df = update_all_stock_prices(individual_log_df, all_market_dfs, run_timestamp)
+    updated_stocks_df, updated_market_state_df = update_all_stock_prices(fanlog_df, all_market_dfs, run_timestamp)
     updated_stocks_df.to_csv('market/stock_prices.csv', index=False, float_format='%.2f')
     updated_market_state_df.to_csv('market/market_state.csv', index=False)
     print("Successfully updated stock_prices.csv and logged stock_price_history.csv.")
 
-    # --- 3. Clear Expired Events and Trigger New Ones ---
     print("\n--- Checking for Market Events ---")
     new_event_triggered = clear_and_check_events(run_timestamp)
 
-    # If a new event was triggered, write its name to a flag file for the bot
     if new_event_triggered:
         with open('market/new_event.txt', 'w') as f:
             f.write(new_event_triggered)
-    # =================================================================
     
 if __name__ == "__main__":
     main()
