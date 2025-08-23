@@ -288,7 +288,6 @@ async def announce_event(event_name):
         print("Bot is not in any guild, cannot announce event.")
         return
         
-    # UPDATED: This now correctly sends to the dedicated channel
     await send_to_fan_exchange(guild, f"**📢 MARKET UPDATE!**\n{flavor_text}")
 
 def get_cost_basis(user_id: str, stock_name: str, transactions_df: pd.DataFrame):
@@ -404,6 +403,28 @@ async def update_ranks_task():
             if old_role != correct_role:
                 await member.remove_roles(old_role)
 
+# --- NEW BACKGROUND TASK FOR ANNOUNCEMENTS ---
+@tasks.loop(minutes=20) # Checks every 20 minutes
+async def check_for_announcements():
+    announcement_file = "announcements.txt"
+    # Check if the file exists and is not empty
+    if os.path.exists(announcement_file) and os.path.getsize(announcement_file) > 0:
+        # We found messages to send
+        with open(announcement_file, "r+") as f:
+            messages = f.readlines()
+            f.truncate(0) # Clear the file immediately after reading
+
+        # Get the guild (server) object
+        if not bot.guilds:
+            print("ERROR: Bot is not connected to any guilds. Cannot send announcement.")
+            return
+        guild = bot.guilds[0]
+
+        for message in messages:
+            message = message.strip() # Remove any leading/trailing whitespace
+            if message: # Ensure we don't send empty lines
+                print(f"Sending announcement from file: {message}")
+                await send_to_fan_exchange(guild, message)
 
 # --- Bot Commands ---
 

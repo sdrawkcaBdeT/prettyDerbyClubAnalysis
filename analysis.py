@@ -10,7 +10,7 @@ import matplotlib.patheffects as pe
 import matplotlib.font_manager as fm
 from market.economy import load_market_data, process_cc_earnings
 from market.engine import update_all_stock_prices
-from market.events import clear_and_check_events
+from market.events import clear_and_check_events, update_lag_index
 
 # --- Configuration ---
 MEMBERS_CSV = 'members.csv'
@@ -150,7 +150,7 @@ def main():
     if not initial_market_data:
         print("FATAL: Could not load market data. Halting Fan Exchange processing.")
         return
-
+ 
     print("Running CC Earnings Engine...")
     updated_crew_coins_df = process_cc_earnings(fanlog_df, initial_market_data, run_timestamp)
     updated_crew_coins_df['balance'] = updated_crew_coins_df['balance'].round().astype(int)
@@ -165,11 +165,20 @@ def main():
     print("Successfully updated stock_prices.csv and logged stock_price_history.csv.")
 
     print("\n--- Checking for Market Events ---")
-    new_event_triggered = clear_and_check_events(run_timestamp)
+    # Check for a lag shift and capture the announcement
+    lag_announcement = update_lag_index(run_timestamp)
+    if lag_announcement:
+        print(f"Queueing announcement: {lag_announcement}")
+        with open("announcements.txt", "a") as f:
+            f.write(lag_announcement + "\n")
 
-    if new_event_triggered:
-        with open('market/new_event.txt', 'w') as f:
-            f.write(new_event_triggered)
+    # Check for a new market event and capture the announcement
+    event_announcement = clear_and_check_events(run_timestamp)
+    if event_announcement:
+        full_event_message = f"🎉 **Market Event!** {event_announcement}"
+        print(f"Queueing announcement: {full_event_message}")
+        with open("announcements.txt", "a") as f:
+            f.write(full_event_message + "\n")
     
 if __name__ == "__main__":
     main()
