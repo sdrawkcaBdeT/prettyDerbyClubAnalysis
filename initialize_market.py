@@ -11,7 +11,7 @@ def initialize_market():
     MARKET_DIR = 'market'
     FILES_TO_CREATE = {
         # --- State Files (Current Status) ---
-        'market_state.csv': ['state_name', 'value'],
+        'market_state.csv': ['state_name', 'value', 'last_event_check_timestamp'],
         'crew_coins.csv': ['discord_id', 'in_game_name', 'balance'],
         'stock_prices.csv': ['in_game_name', 'current_price', '24hr_change'],
         'portfolios.csv': ['investor_discord_id', 'stock_in_game_name', 'shares_owned'],
@@ -38,26 +38,21 @@ def initialize_market():
         os.makedirs(MARKET_DIR)
         print(f"Created directory: {MARKET_DIR}")
 
-    for filename in FILES_TO_CREATE.keys():
-        filepath = os.path.join(MARKET_DIR, filename)
-        if os.path.exists(filepath):
-            print(f"ERROR: Market file '{filepath}' already exists. Halting to prevent overwriting data.")
-            return
-
-    print("No existing market files found. Proceeding with initialization.")
-
     for filename, headers in FILES_TO_CREATE.items():
         filepath = os.path.join(MARKET_DIR, filename)
-        pd.DataFrame(columns=headers).to_csv(filepath, index=False)
-    print("Created 7 new market CSV files with correct headers.")
+        if not os.path.exists(filepath):
+            pd.DataFrame(columns=headers).to_csv(filepath, index=False)
+            print(f"Created missing file: {filepath}")
 
-    market_state_data = {
-    'state_name': ['lag_index', 'active_event', 'event_end_time', 'club_sentiment', 'last_event_check_timestamp'],
-    'value': [1, 'None', 'None', 1.0, None]
-    }
-    market_state_df = pd.DataFrame(market_state_data)
-    market_state_df.to_csv(os.path.join(MARKET_DIR, 'market_state.csv'), index=False)
-    print("Populated market_state.csv with initial values.")
+    # --- Populate market_state.csv ---
+    market_state_df = pd.read_csv(os.path.join(MARKET_DIR, 'market_state.csv'))
+    if market_state_df.empty:
+        market_state_data = {
+            'state_name': ['lag_index', 'active_event', 'event_end_time', 'club_sentiment', 'last_event_check_timestamp'],
+            'value': [1, 'None', 'None', 1.0, None]
+        }
+        pd.DataFrame(market_state_data).to_csv(os.path.join(MARKET_DIR, 'market_state.csv'), index=False)
+        print("Populated market_state.csv.")
 
     try:
         fan_log_df = pd.read_csv('enriched_fan_log.csv')
@@ -66,19 +61,12 @@ def initialize_market():
         print(f"ERROR: Could not find required source file: {e.filename}")
         return
 
-    # --- FIX APPLIED HERE ---
-    # Rename columns from the CSV to match what the script expects.
-    fan_log_df.rename(columns={
-        'inGameName': 'in_game_name',
-        'cumulativePrestige': 'total_prestige'
-    }, inplace=True)
-    # --- END FIX ---
-
+    # --- Populate other initial files ---
+    fan_log_df = pd.read_csv('enriched_fan_log.csv')
+    fan_log_df.rename(columns={'inGameName': 'in_game_name', 'cumulativePrestige': 'total_prestige'}, inplace=True)
+    registrations_df = pd.read_csv('user_registrations.csv')
+    
     latest_entries = fan_log_df.sort_values('timestamp').groupby('in_game_name').tail(1)
-    
-    # Ensure in_game_name in registrations_df is string type to avoid merge errors
-    registrations_df['in_game_name'] = registrations_df['in_game_name'].astype(str)
-    
     member_data = pd.merge(latest_entries, registrations_df, on='in_game_name', how='left')
 
     crew_coins_records = []
@@ -89,14 +77,14 @@ def initialize_market():
         discord_id = row['discord_id']
         total_prestige = row['total_prestige']
 
-        starting_cc = (total_prestige ** 1.03) * 1.57 + 1557
+        starting_cc = (total_prestige ** 1.03) * 1.57 + 3557
         crew_coins_records.append({
             'discord_id': discord_id,
             'in_game_name': in_game_name,
             'balance': int(round(starting_cc))
         })
 
-        random_init_factor = random.randint(15, 45)
+        random_init_factor = random.randint(28, 42)
         member_init_records.append({
             'in_game_name': in_game_name,
             'random_init_factor': random_init_factor,
@@ -114,7 +102,6 @@ def initialize_market():
     print("Populated member_initialization.csv with permanent random factors.")
 
     print("\n--- Market Initialization Complete ---")
-    print("The script should now run without errors.")
 
 if __name__ == '__main__':
     initialize_market()
