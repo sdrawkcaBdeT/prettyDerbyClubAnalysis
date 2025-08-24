@@ -97,6 +97,9 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
         tenure_yield = tenure_prestige * tenure_multiplier
         base_cc_earned = performance_yield + tenure_yield
         
+        # --- FIX: Prevent negative base earnings from generating negative dividends ---
+        base_cc_earned = max(0, base_cc_earned)
+        
         hype_bonus_multiplier = calculate_hype_bonus(portfolios_df, inGameName)
         hype_bonus_yield = base_cc_earned * (hype_bonus_multiplier - 1)
         total_personal_cc_earned = base_cc_earned + hype_bonus_yield

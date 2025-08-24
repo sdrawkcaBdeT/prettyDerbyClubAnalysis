@@ -6,6 +6,12 @@ import os
 import json
 import ast
 
+def _format_timestamp(dt_object):
+    """Formats a datetime object into the consistent ecosystem format."""
+    # Example: 2025-08-23 10:56:33-05:00
+    base_str = dt_object.strftime('%Y-%m-%d %H:%M:%S%z')
+    return f"{base_str[:-2]}:{base_str[-2:]}"
+
 def get_market_state():
     return pd.read_csv('market/market_state.csv', index_col='state_name')['value']
 
@@ -77,7 +83,7 @@ def update_lag_index(run_timestamp):
         print(f"LAG INDEX SHIFT: New cursor is {new_cursor} ({new_lag_days} days).")
         log_market_event("Lag Index Shift", "SHIFT", details=json.dumps({'new_lag_days': new_lag_days, 'old_lag_days': current_lag_days}))
 
-    market_state['last_lag_check_timestamp'] = run_timestamp.isoformat()
+    market_state['last_lag_check_timestamp'] = _format_timestamp(run_timestamp)
     save_market_state(market_state)
     return announcement
 
@@ -122,11 +128,11 @@ def clear_and_check_events(run_timestamp):
                 end_time = run_timestamp + timedelta(hours=duration_hours)
                 
                 market_state['active_event'] = event_name
-                market_state['event_end_time'] = end_time.isoformat()
+                market_state['event_end_time'] = _format_timestamp(end_time)
                 new_event_triggered = event_name # Set the flag for the return value
                 print(f"EVENT TRIGGERED: {event_name}")
                 log_market_event(event_name, 'START', details=json.dumps(chosen_event.to_dict()))
 
-    market_state['last_event_check_timestamp'] = run_timestamp.isoformat()
+    market_state['last_event_check_timestamp'] = _format_timestamp(run_timestamp)
     save_market_state(market_state)
     return new_event_triggered
