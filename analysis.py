@@ -8,6 +8,8 @@ import os
 import pytz
 import matplotlib.patheffects as pe
 import matplotlib.font_manager as fm
+import csv
+import ast # Required for parsing the lag options
 from market.economy import load_market_data, process_cc_earnings
 from market.engine import update_all_stock_prices
 from market.events import clear_and_check_events, update_lag_index
@@ -17,6 +19,41 @@ MEMBERS_CSV = 'members.csv'
 FANLOG_CSV = 'fan_log.csv'
 RANKS_CSV = 'ranks.csv'
 OUTPUT_DIR = 'Club_Report_Output'
+
+def _format_timestamp(dt_object):
+    """Formats a datetime object into the consistent ecosystem format."""
+    # Example: 2025-08-23 10:56:33-05:00
+    base_str = dt_object.strftime('%Y-%m-%d %H:%M:%S%z')
+    return f"{base_str[:-2]}:{base_str[-2:]}"
+
+def log_market_snapshot(run_timestamp, market_state):
+    """Logs the current state of the market to a historical file."""
+    log_file = 'market/market_snapshot_log.csv'
+    file_exists = os.path.isfile(log_file)
+
+    # --- Determine the active lag in days ---
+    try:
+        lag_options_str = market_state.get('lag_options', "[0]")
+        lag_options = ast.literal_eval(lag_options_str)
+        active_cursor = int(market_state.get('active_lag_cursor', 0))
+        if active_cursor >= len(lag_options): active_cursor = 0
+        active_lag_days = lag_options[active_cursor]
+    except Exception:
+        active_lag_days = -1 # Log -1 on error
+
+    snapshot_data = {
+        'timestamp': _format_timestamp(run_timestamp),
+        'active_event': market_state.get('active_event', 'None'),
+        'club_sentiment': market_state.get('club_sentiment', 1.0),
+        'active_lag_days': active_lag_days
+    }
+
+    with open(log_file, 'a', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=snapshot_data.keys())
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(snapshot_data)
+    print("--- Market snapshot logged. ---")
 
 def get_club_month_window(run_time_ct):
     """Calculates the start and end of the current in-game ranking period."""
@@ -150,6 +187,12 @@ def main():
     if not initial_market_data:
         print("FATAL: Could not load market data. Halting Fan Exchange processing.")
         return
+    
+    # Convert the market_state DataFrame to a Series
+    market_state_series = initial_market_data['market_state'].set_index('state_name')['value']
+
+    # Log the state of the market *before* any calculations are run.
+    log_market_snapshot(run_timestamp, market_state_series)
  
     print("Running CC Earnings Engine...")
     updated_crew_coins_df = process_cc_earnings(fanlog_df, initial_market_data, run_timestamp)
