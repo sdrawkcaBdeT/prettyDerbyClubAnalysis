@@ -124,6 +124,10 @@ def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
 
     for name in member_names:
         member_latest_data = enriched_df[enriched_df['inGameName'] == name].iloc[-1]
+        
+        total_shares_outstanding = portfolios_df[portfolios_df['stock_inGameName'] == name]['shares_owned'].sum()
+        price_impact_multiplier = (1 + (total_shares_outstanding * 0.00002)) ** 1.2
+        
         prestige = member_latest_data['lifetimePrestige']
         random_factor_row = init_df[init_df['inGameName'] == name]
         if random_factor_row.empty: continue
@@ -140,6 +144,8 @@ def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
         
         player_condition = event_modifiers['condition'].get(name, get_player_condition(enriched_df, name))
         price_modifier = event_modifiers['price'].get(name, 1.0)
+        
+        final_price = (core_value * player_condition) * price_modifier * price_impact_multiplier
         
         final_price = (core_value * player_condition) * price_modifier
         final_price = max(final_price, 0.01)
