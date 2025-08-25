@@ -1,5 +1,6 @@
 import json
 import random
+import numpy as np
 
 class Horse:
     """
@@ -73,3 +74,104 @@ class Horse:
 
 # horse2 = Horse("Broken Bullet", "Front Runner")
 # horse2.display_stats()
+
+class Race:
+    """
+    Manages a single race simulation, including the track, the horses,
+    and the round-by-round progression.
+    """
+    
+    def __init__(self, horses: list, distance: int = 2400):
+        """
+        Initializes a Race object.
+
+        Args:
+            horses (list): A list of Horse objects participating in the race.
+            distance (int): The total distance of the race in meters.
+        """
+        self.horses = horses
+        self.distance = distance
+        self.track_segments = 24
+        self.segment_length = self.distance / self.track_segments
+        
+        self.round_number = 0
+        self.positions = {horse.name: 0 for horse in self.horses}
+        self.log = [] # To store a text log of the race events
+
+    def _get_current_phase(self) -> str:
+        """Determines the current phase of the race based on segments covered."""
+        # Note: Segments are 1-based for the design doc, 0-based in code is easier.
+        # A 24-segment track has segments 0-23.
+        current_segment = self.round_number
+        if current_segment <= 3: # Segments 1-4
+            return 'early_race'
+        elif current_segment <= 15: # Segments 5-16
+            return 'mid_race'
+        else: # Segments 17-24
+            return 'late_race'
+
+    def _calculate_distance_penalty(self, horse: Horse) -> float:
+        """
+        Calculates the performance penalty based on the difference between
+        the race distance and the horse's preferred distance.
+        
+        Penalty: -5% to final mean for every 400m of difference.
+        """
+        distance_diff = abs(self.distance - horse.preferred_distance)
+        penalty_intervals = distance_diff // 400
+        penalty_percentage = penalty_intervals * 0.05
+        return 1.0 - penalty_percentage # Returns a multiplier, e.g., 0.95
+
+    def run_round(self):
+        """Simulates a single round of the race for all horses."""
+        self.round_number += 1
+        current_phase = self._get_current_phase()
+        self.log.append(f"--- Round {self.round_number} ({current_phase.replace('_', ' ').title()}) ---")
+
+        for horse in self.horses:
+            stats = horse.stats[current_phase]
+            base_mean = stats['mean']
+            sigma = stats['sigma']
+            
+            # Apply the distance suitability penalty to the mean
+            distance_multiplier = self._calculate_distance_penalty(horse)
+            adjusted_mean = base_mean * distance_multiplier
+            
+            # Draw movement from the Normal Distribution
+            movement = np.random.normal(loc=adjusted_mean, scale=sigma)
+            movement = max(0, movement) # A horse cannot move backwards
+            
+            self.positions[horse.name] += movement
+            self.log.append(f"{horse.name} moves {movement:.0f}m.")
+
+    def is_finished(self) -> bool:
+        """
+        Checks if the race is complete. The race is considered finished
+        once at least 5 horses have crossed the finish line.
+        """
+        finishers = [h for h in self.horses if self.positions[h.name] >= self.distance]
+        return len(finishers) >= 5
+
+    def get_results(self) -> list:
+        """Returns a sorted list of finishers."""
+        # Sort horses by their final position, descending
+        sorted_results = sorted(self.horses, key=lambda h: self.positions[h.name], reverse=True)
+        return sorted_results
+    
+# --- Test Code ---
+# (Assume the Horse class and some test horses are defined)
+# test_horses = [Horse("Iron Fury", "Pace Chaser"), Horse("Broken Bullet", "Front Runner"), Horse("Nice Nature", "Late Surger"), Horse("Broken Cheater", "End Closer"), Horse("Inspector Gadget", "Pace Chaser"), Horse("Thunder Wave", "End Closer")]
+# race = Race(test_horses, distance=1600)
+
+# while not race.is_finished():
+#     race.run_round()
+
+# print("\n--- RACE FINISHED ---")
+# results = race.get_results()
+# for i, horse in enumerate(results):
+#     print(f"{i+1}. {horse.name} - Final Position: {race.positions[horse.name]:.0f}m")
+
+# # Optional: Print the full log to see the round-by-round action
+# print("\n--- Full Race Log ---")
+# for entry in race.log:
+#     print(entry)
