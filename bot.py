@@ -1195,7 +1195,26 @@ async def market(ctx):
     view.add_item(next_button)
 
     await ctx.send(embed=await generate_embed(current_page), view=view)
-    
+
+@bot.command()
+async def ledger(ctx):
+    """Posts the market_ledger.png chart to the current channel."""
+    try:
+        # Define the path to the image
+        file_path = os.path.join(OUTPUT_DIR, 'market_ledger.png')
+
+        # Check if the file actually exists before trying to send it
+        if not os.path.exists(file_path):
+            await ctx.send(f"{ctx.author.mention}, the market ledger image could not be found. Please run a data refresh.")
+            return
+
+        # Create a discord.File object from the path and send it
+        await ctx.send(
+            f"{ctx.author.mention} here is the market ledger!",
+            file=discord.File(file_path)
+        )
+    except Exception as e:
+        await ctx.send(f"An error occurred while trying to send the ledger: {e}")
 
 @bot.command(name="stock")
 async def stock(ctx, *, member: str):

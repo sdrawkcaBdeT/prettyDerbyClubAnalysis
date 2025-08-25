@@ -10,6 +10,15 @@ import matplotlib.patheffects as pe
 
 OUTPUT_DIR = 'Club_Report_Output'
 
+# --- Matplotlib Configuration ---
+plt.rcParams['figure.facecolor'] = '#1A1B26'
+plt.rcParams['text.color'] = '#A9B1D6'
+plt.rcParams['axes.labelcolor'] = '#A9B1D6'
+plt.rcParams['xtick.color'] = '#A9B1D6'
+plt.rcParams['ytick.color'] = '#A9B1D6'
+plt.rcParams['axes.edgecolor'] = '#414868'
+plt.rcParams['axes.facecolor'] = '#1A1B26'
+
 # Create a FontProperties object that points to your font file
 try:
     myfont = fm.FontProperties(fname='D:/github/prettyDerbyClubAnalysis/fonts/25318.OTF')
@@ -485,6 +494,116 @@ def generate_log_image(log_data, title, filename, generated_str, limit=15, is_cl
     plt.savefig(os.path.join(OUTPUT_DIR, "individual_logs", filename), bbox_inches='tight', pad_inches=0.3, facecolor=fig.get_facecolor())
     plt.close(fig)
 
+def generate_market_ledger():
+    """Generates a new market_ledger.png image with improved aesthetics and data relevance."""
+    try:
+        portfolios_df = pd.read_csv('market/portfolios.csv', dtype={'investor_discord_id': str})
+        stock_prices_df = pd.read_csv('market/stock_prices.csv')
+        crew_coins_df = pd.read_csv('market/crew_coins.csv', dtype={'discord_id': str})
+    except FileNotFoundError as e:
+        print(f"Market Ledger Generation Failed: Missing {e.filename}")
+        return
+
+    # --- Data Preparation ---
+    id_to_name_map = crew_coins_df.set_index('discord_id')['inGameName'].to_dict()
+    name_to_id_map = {v: k for k, v in id_to_name_map.items()}
+    
+    portfolios_df['investor_inGameName'] = portfolios_df['investor_discord_id'].map(id_to_name_map)
+    portfolios_df['stock_owner_discord_id'] = portfolios_df['stock_inGameName'].map(name_to_id_map)
+    
+    # --- 1. Most Hyped Stocks ---
+    external_holdings = portfolios_df[portfolios_df['investor_discord_id'] != portfolios_df['stock_owner_discord_id']]
+    
+    hyped_stocks_agg = external_holdings.groupby('stock_inGameName').agg(
+        External_Shares_Held=('shares_owned', 'sum'),
+        Unique_Investors=('investor_inGameName', 'nunique')
+    ).nlargest(10, 'External_Shares_Held').reset_index()
+    
+    hyped_stocks_agg.rename(columns={'stock_inGameName': 'IGN'}, inplace=True)
+    hyped_stocks_agg['External_Shares_Held'] = hyped_stocks_agg['External_Shares_Held'].round(0).astype(int)
+    hyped_stocks_agg.rename(columns={'External_Shares_Held': 'External Shares Held', 'Unique_Investors': 'Unique Investors'}, inplace=True)
+
+    # --- 2. Richest Investors (The Whales) ---
+    portfolios_with_prices = pd.merge(portfolios_df, stock_prices_df, left_on='stock_inGameName', right_on='inGameName')
+    portfolios_with_prices['holding_value'] = portfolios_with_prices['shares_owned'] * portfolios_with_prices['current_price']
+    
+    richest_investors_agg = portfolios_with_prices.groupby('investor_inGameName').agg(
+        Portfolio_Value=('holding_value', 'sum'),
+        Unique_Stocks_Held=('stock_inGameName', 'nunique')
+    ).nlargest(10, 'Portfolio_Value').reset_index()
+    
+    richest_investors_agg = pd.merge(richest_investors_agg, crew_coins_df[['inGameName', 'balance']], left_on='investor_inGameName', right_on='inGameName', how='left')
+    richest_investors_agg.rename(columns={'investor_inGameName': 'IGN', 'balance': 'Liquid CC'}, inplace=True)
+    richest_investors_agg.drop('inGameName', axis=1, inplace=True)
+
+    # --- Rendering the Image ---
+    fig = plt.figure(figsize=(10, 10))
+    fig.patch.set_facecolor('#1A1B26') # Dark background for the whole figure
+    
+    # --- Get Last Update Timestamp ---
+    try:
+        balance_history_df = pd.read_csv('market/balance_history.csv')
+        # Read the last timestamp as a raw string
+        last_update_str = balance_history_df['timestamp'].iloc[-1]
+        
+        # Manually parse the string to avoid double-counting the timezone
+        # This assumes a format like 'YYYY-MM-DD HH:MM:SS-ZZ:ZZ'
+        parts = last_update_str.split('-')
+        if len(parts) > 3: # It has a timezone offset
+            # Rejoin the date and time, then parse
+            dt_part = "-".join(parts[:3])
+            tz_part = f"-{parts[-1]}" # The offset part
+            dt_obj = pd.to_datetime(dt_part)
+            timestamp_str = f"Updated: {dt_obj.strftime('%Y-%m-%d %I:%M %p')} UTC{tz_part}"
+        else: # No timezone info found
+            dt_obj = pd.to_datetime(last_update_str)
+            timestamp_str = f"Updated: {dt_obj.strftime('%Y-%m-%d %I:%M %p')}"
+
+    except (FileNotFoundError, IndexError, ValueError):
+        # Fallback if the file is missing, empty, or has an unexpected format
+        timestamp_str = f"Updated: {datetime.now().strftime('%Y-%m-%d %I:%M %p')}"
+    
+    fig.text(0.05, 0.95, f'Market Ledger | {timestamp_str}', fontproperties=myfont, fontsize=21, ha='left', va='top', color='#ffffff')
+
+    gs = fig.add_gridspec(2, 1, hspace=0.4, top=0.85)
+
+    # Hyped Stocks Table
+    ax1 = fig.add_subplot(gs[0])
+    ax1.axis('off')
+    ax1.set_title('Most Hyped Stocks', fontproperties=myfont, fontsize=16, loc='left', pad=20, color='#e4ff2f')
+    table1 = ax1.table(cellText=hyped_stocks_agg.values, colLabels=hyped_stocks_agg.columns, loc='center', cellLoc='left')
+
+    # Richest Investors Table
+    ax2 = fig.add_subplot(gs[1])
+    ax2.axis('off')
+    ax2.set_title('Richest Investors', fontproperties=myfont, fontsize=16, loc='left', pad=20, color='#e4ff2f')
+    richest_investors_agg['Portfolio_Value'] = richest_investors_agg['Portfolio_Value'].map('{:,.0f}'.format)
+    richest_investors_agg['Liquid CC'] = richest_investors_agg['Liquid CC'].map('{:,.0f}'.format)
+    richest_investors_agg.rename(columns={'Portfolio_Value': 'Portfolio Value', 'Unique_Stocks_Held': 'Unique Stocks'}, inplace=True)
+    table2 = ax2.table(cellText=richest_investors_agg.values, colLabels=richest_investors_agg.columns, loc='center', cellLoc='left')
+
+    for table in [table1, table2]:
+        table.auto_set_font_size(False)
+        table.set_fontsize(24)
+        table.scale(1, 1.8) 
+        for key, cell in table.get_celld().items():
+            cell.set_edgecolor('#414868')
+            cell.set_facecolor('#1A1B26')
+            cell.set_text_props(fontproperties=myfont, color='#ffffff', fontsize=15)
+            if key[1] != -1: # Don't format row headers
+                cell.set_height(0.1)
+                cell.set_text_props(ha='left', va='center', fontproperties=myfont, fontsize=13)
+                cell.set_edgecolor('none')
+            if key[0] == 0: # Header row
+                cell.set_text_props(fontproperties=myfont, weight='bold', color='#f0f7be', fontsize=14)
+                cell.set_facecolor('#24283B')
+                cell.set_edgecolor('#414868')
+
+
+    plt.savefig('Club_Report_Output/market_ledger.png', facecolor=fig.get_facecolor(), edgecolor='none')
+    plt.close(fig)
+    print("Generated market ledger report.")
+
 def create_all_visuals(members_df, summary_df, individual_log_df, club_log_df, contribution_df, historical_df, last_updated_str, generated_str, start_date, end_date, daily_summary_df):
     """
     Main function to create and save all visualizations.
@@ -675,6 +794,7 @@ def main():
 
     # --- 3. Calling Visualization Function ---
     print("--- 3. Generating Visuals and Reports ---")
+    generate_market_ledger()
     create_all_visuals(
         members_df=members_df,
         summary_df=summary_df,
