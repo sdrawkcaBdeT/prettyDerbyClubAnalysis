@@ -2055,6 +2055,84 @@ async def race_bet(ctx, horse_number: int, amount: int):
     finally:
         os.remove(lock_file)
 
+@bot.command(name="refund_race")
+@commands.has_permissions(administrator=True)
+async def refund_race(ctx, race_id: int):
+    """(Admin Only) Refunds all bets for a given race ID."""
+    lock_file = 'market/market.lock'
+    if os.path.exists(lock_file):
+        await ctx.send("The market is busy. Please try again in a moment.", ephemeral=True)
+        return
+    open(lock_file, 'w').close()
+
+    try:
+        races_df = load_market_file('races.csv')
+        bets_df = load_market_file('race_bets.csv')
+        crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
+        bot_ledgers_df = load_market_file('bot_ledgers.csv')
+
+        target_race = races_df[races_df['race_id'] == race_id]
+        if target_race.empty:
+            await ctx.send(f"Could not find a race with ID `{race_id}`.", ephemeral=True)
+            return
+
+        if target_race['status'].iloc[0] in ['refunded', 'cancelled']:
+            await ctx.send(f"Race `{race_id}` has already been cancelled or refunded.", ephemeral=True)
+            return
+            
+        bets_to_refund = bets_df[bets_df['race_id'] == race_id]
+        if bets_to_refund.empty:
+            await ctx.send(f"No bets were placed on race `{race_id}` to refund.", ephemeral=True)
+            return
+            
+        refund_summary = ""
+        total_refunded = 0
+
+        for _, bet in bets_to_refund.iterrows():
+            bettor_id = str(bet['bettor_id'])
+            amount = bet['bet_amount']
+            total_refunded += amount
+            
+            # Check if the bettor is a bot or a human user
+            if bettor_id in bot_ledgers_df['bot_name'].values:
+                bot_ledgers_df.loc[bot_ledgers_df['bot_name'] == bettor_id, 'bankroll'] += amount
+                refund_summary += f"🤖 Refunded {format_cc(amount)} to bot **{bettor_id}**.\n"
+            else:
+                user_index = crew_coins_df[crew_coins_df['discord_id'] == bettor_id].index
+                if not user_index.empty:
+                    crew_coins_df.loc[user_index, 'balance'] += amount
+                    refund_summary += f"👤 Refunded {format_cc(amount)} to <@{bettor_id}>.\n"
+
+        # Update the race status to 'refunded'
+        races_df.loc[races_df['race_id'] == race_id, 'status'] = 'refunded'
+
+        # Save all changes
+        races_df.to_csv('market/races.csv', index=False)
+        crew_coins_df.to_csv('market/crew_coins.csv', index=False)
+        bot_ledgers_df.to_csv('market/bot_ledgers.csv', index=False)
+        
+        # Announce the refund
+        embed = discord.Embed(
+            title="🏁 Race Refund Announcement 🏁",
+            description=f"All bets for **Race #{race_id}** have been refunded by an administrator.",
+            color=discord.Color.orange()
+        )
+        embed.add_field(name="Total CC Refunded", value=format_cc(total_refunded))
+        
+        winners_circle_channel = discord.utils.get(ctx.guild.channels, name=WINNERS_CIRCLE_CHANNEL_NAME)
+        if winners_circle_channel:
+            await winners_circle_channel.send(embed=embed)
+        
+        await ctx.send(f"✅ Successfully refunded all bets for race `{race_id}`.", embed=embed, ephemeral=True)
+
+    finally:
+        os.remove(lock_file)
+
+@refund_race.error
+async def refund_race_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("You do not have permission to use this command.", ephemeral=True)
+
 # --- Run the Bot ---
 load_dotenv() # Loads variables from .env file
 TOKEN = os.getenv('DISCORD_TOKEN')
