@@ -16,6 +16,9 @@ import json
 import random
 from race_logic import Race, Horse
 import skills # We don't use it directly, but race_logic needs it
+from race_logic_v2 import Horse, Race, Bookie
+from race_bots import BotManager
+from market import database
 
 # --- Configuration ---
 COMMAND_LOG_CSV = 'command_log.csv'
@@ -52,7 +55,7 @@ SHOP_ITEMS = {
     "PERFORMANCE": {
         "p1": {
             "name": "Study Race Tapes",
-            "description": "Increases Performance Yield multiplier by +0.15 per tier. Multiplier without upgrades (base) is 1.75.",
+            "description": "Increases Performance Yield multiplier by +2.75 per tier. Multiplier without upgrades (base) is 1.75.",
             "costs": [15000, 40000, 120000],
             "max_tier": 3,
             "type": "upgrade"
@@ -217,6 +220,82 @@ def get_club_rank(df, target_timestamp, inGameName):
     return member_rank_series[0] + 1 if not member_rank_series.empty else None
 
 # --- HELPER FUNCTIONS FOR MARKET ---
+def is_admin(ctx):
+    """A check function to see if the user is an admin."""
+    try:
+        with open('config.json', 'r') as f:
+            config = json.load(f)
+        admin_ids = config.get("ADMIN_DISCORD_IDS", [])
+        return str(ctx.author.id) in admin_ids
+    except FileNotFoundError:
+        return False
+
+@bot.command(name="award_cc")
+@commands.check(is_admin)
+async def award_cc(ctx, member: str, amount: int):
+    """(Admin Only) Awards a specified amount of CC to a member."""
+    admin_id = str(ctx.author.id)
+
+    # --- 1. Input Validation ---
+    if amount <= 0:
+        return await ctx.send("Please enter a positive whole number for the amount.", ephemeral=True)
+
+    target_name = get_name_from_ticker_or_name(member)
+    if not target_name:
+        return await ctx.send(f"Could not find a member or ticker named '{member}'.", ephemeral=True)
+
+    # --- 2. File Locking for Safe Modification ---
+    lock_file = 'market/market.lock'
+    if os.path.exists(lock_file):
+        return await ctx.send("The market is currently busy. Please try again in a moment.", ephemeral=True)
+    open(lock_file, 'w').close()
+
+    try:
+        # --- 3. Core Logic: Modification ---
+        crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
+        target_user_row = crew_coins_df[crew_coins_df['inGameName'] == target_name]
+
+        if target_user_row.empty:
+            return await ctx.send(f"Could not find '{target_name}' in the crew_coins ledger.", ephemeral=True)
+
+        # Add the CC to the user's balance
+        crew_coins_df.loc[target_user_row.index, 'balance'] += amount
+        crew_coins_df.to_csv('market/crew_coins.csv', index=False)
+
+        # --- 4. Auditing ---
+        target_id = target_user_row['discord_id'].iloc[0]
+        log_market_transaction(
+            actor_id=admin_id,
+            transaction_type='ADMIN_AWARD',
+            target_id=target_id,
+            item_name="Admin Discretionary Award",
+            item_quantity=1, # Not relevant here, but the function requires it
+            cc_amount=amount,
+            fee_paid=0
+        )
+
+        # --- 5. Confirmation ---
+        new_balance = crew_coins_df.loc[target_user_row.index, 'balance'].iloc[0]
+        embed = discord.Embed(
+            title="✅ CC Awarded Successfully",
+            description=f"You have awarded **{format_cc(amount)}** to **{target_name}**.",
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text=f"Their new balance is {format_cc(new_balance)}.")
+        await ctx.send(embed=embed)
+
+    except Exception as e:
+        await ctx.send(f"An unexpected error occurred: {e}", ephemeral=True)
+    finally:
+        # Always remove the lock file, even if an error occurs
+        os.remove(lock_file)
+
+@award_cc.error
+async def award_cc_error(ctx, error):
+    if isinstance(error, commands.CheckFailure):
+        await ctx.send("You do not have permission to use this command.", ephemeral=True)
+
+
 def load_market_file(filename, dtype=None):
     """Safely loads a CSV file from the market directory."""
     try:
@@ -1516,8 +1595,8 @@ active_races = {}  # In-memory dictionary to hold live Race objects
 DEFINED_HORSES = ["Sakura Bakushin Oh", "Marzensty", "El", "Oguri Hat", "Gold Trip", "Earth Rut"]
 
 HORSE_NAME_PARTS = {
-    "adjectives": ["Galloping", "Midnight", "Silver", "Dusty", "Iron", "Star", "Thunder", "Shadow", "Crimson", "Golden", "Baggins", "Cheating", "BOT", "Nice", "Mean", "Godly", "Inspector", "Ghostly", "Dishonest", "Old School", ],
-    "nouns": ["Gus", "Bullet", "Fury", "Runner", "Clad", "Chaser", "Stallion", "Dreamer", "Comet", "Specter", "Baggins", "Cheater", "God", "Nature", "Gadget", "Wave", "Yuto", "Claimses", "Insomnia", "Twice", "#3487", "Kei", "Kurumu", "Maslow", "Epidemic", "King", "Queen", "Jester", ]
+    "adjectives": ["Galloping", "Midnight", "Dusty", "Iron", "Star", "Thunder", "Shadow", "Golden", "Baggins", "Cheating", "BOT", "Nice", "Mean", "Godly", "Inspector", "Dishonest", "Old School", "Broken", "Neon", "Lucky", "Turbo", "Sticky", "Captain", "Major", "Wild", "Furious", "Stoic", "Noble", "Cash"],
+    "nouns": ["Bullet", "Fury", "Runner", "Chaser", "Stallion", "Dreamer", "Comet", "Baggins", "Cheater", "God", "Nature", "Gadget", "Wave", "Insomnia", "Twice", "Epidemic", "King", "Queen", "Jester", "Engine", "Glitch", "Rocket", "Mirror", "Major", "Pilgrim", "Mountain", "Crew"]
 }
 HORSE_STRATEGIES = ["Front Runner", "Pace Chaser", "Late Surger", "End Closer"]
 GENERIC_SKILLS = ["Straightaway Adept", "Homestretch Haste", "Slipstream", "Late Start"]
@@ -2132,6 +2211,106 @@ async def refund_race(ctx, race_id: int):
 async def refund_race_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("You do not have permission to use this command.", ephemeral=True)
+
+
+##########################        
+##### RACE VERSION 2 #####
+##########################
+
+# --- NEW HELPER FUNCTION FOR HORSE GENERATION ---
+
+def generate_random_horse_field(num_horses: int) -> list:
+    """
+    Reads the attributes config and generates a list of unique, random horses.
+    """
+    try:
+        with open('market/configs/horse_attributes.json', 'r') as f:
+            config = json.load(f)
+    except FileNotFoundError:
+        print("ERROR: horse_attributes.json not found. Cannot generate horses.")
+        return []
+
+    adjectives = list(config['adjectives'].keys())
+    nouns = list(config['nouns'].keys())
+    strategies = list(config['strategies'].keys())
+    
+    generated_horses = []
+    used_names = set()
+
+    while len(generated_horses) < num_horses:
+        adj = random.choice(adjectives)
+        noun = random.choice(nouns)
+        name = f"{adj} {noun}"
+
+        if name not in used_names:
+            used_names.add(name)
+            strategy = random.choice(strategies)
+            generated_horses.append(Horse(name, strategy))
+            
+    return generated_horses
+
+
+# --- NEW V2 RACING COMMANDS ---
+
+active_races_v2 = {} 
+
+@bot.group(name="race_v2", invoke_without_command=True)
+async def race_v2(ctx):
+    """Parent command for the new V2 Winner's Circle Racing."""
+    await ctx.send("Invalid command. Use `/race_v2 create` or `/race_v2 bet`.", ephemeral=True)
+
+@race_v2.command(name="create")
+@commands.has_permissions(administrator=True)
+async def race_v2_create(ctx, distance: int = 2400, num_horses: int = 10):
+    """(V2) Creates a new, statistically-driven horse race."""
+    
+    if ctx.channel.id in active_races_v2:
+        return await ctx.send("A V2 race is already in progress in this channel.", ephemeral=True)
+
+    await ctx.send("`🏁 V2 Race creation initiated...`\n`Generating horses and running Monte Carlo simulation (this may take a moment)...`")
+
+    # --- 1. Generate the Field (NOW CORRECTED) ---
+    horse_list = generate_random_horse_field(num_horses)
+    if not horse_list:
+        return await ctx.send("Failed to generate horses. Check configuration.", ephemeral=True)
+
+    # --- 2. Initialize the Core Objects ---
+    race_obj = Race(horses=horse_list, distance=distance)
+    bookie_obj = Bookie(race_obj)
+    
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, bookie_obj.run_monte_carlo, 10000)
+
+    # --- 3. Store Race in Database ---
+    race_id = int(datetime.now().timestamp())
+    database.create_race(race_id, distance, horse_list)
+
+    # --- 4. Initialize the Bot Manager and Start Betting Cycle ---
+    bot_manager = BotManager(race_id, bookie_obj)
+    bot.loop.create_task(bot_manager.run_betting_cycle(duration_seconds=120))
+
+    # --- 5. Post the Initial Race Card ---
+    embed = discord.Embed(title=f"🏇 Race #{race_id} - Morning Line Odds", color=discord.Color.green())
+    odds_text = "```\n"
+    for name, data in bookie_obj.morning_line_odds.items():
+        odds_text += f"{name:<20} | {data['odds']:.2f} to 1\n"
+    odds_text += "```"
+    embed.add_field(name="Betting is now OPEN for 2 minutes!", value=odds_text)
+    
+    race_message = await ctx.send(embed=embed)
+
+    active_races_v2[ctx.channel.id] = {
+        "race": race_obj, "bookie": bookie_obj, "bot_manager": bot_manager, "message": race_message
+    }
+    
+    await ctx.send("V2 Race created successfully!", ephemeral=True)
+
+
+
+
+##########################
+##########################
+
 
 # --- Run the Bot ---
 load_dotenv() # Loads variables from .env file

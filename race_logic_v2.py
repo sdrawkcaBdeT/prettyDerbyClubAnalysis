@@ -209,7 +209,7 @@ class Bookie:
         including the house vig.
         """
         if win_rate == 0:
-            return float('inf') # A horse that never wins has infinite odds
+            return 10001 # A horse that never wins has infinite odds
         
         # Fair odds are 1 / probability
         fair_odds = (1 / win_rate) - 1

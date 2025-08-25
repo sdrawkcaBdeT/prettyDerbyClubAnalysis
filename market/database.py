@@ -4,6 +4,7 @@ from psycopg2 import extras
 import logging
 import os
 from dotenv import load_dotenv
+import json
 
 # Load credentials from .env file for security
 load_dotenv()
@@ -75,6 +76,34 @@ def initialize_database():
             conn.rollback()
     conn.close()
 
+def create_race(race_id, distance, horses):
+    """
+    Logs a new race and its participating horses to the database.
+    """
+    conn = get_connection()
+    if not conn: return
+    with conn.cursor() as cursor:
+        try:
+            # Insert the main race record
+            cursor.execute(
+                "INSERT INTO races (race_id, distance, status) VALUES (%s, %s, %s);",
+                (race_id, distance, 'betting')
+            )
+            # Insert all the horse records
+            horse_data = [
+                (race_id, h.name, h.strategy_name, json.dumps(h.stats)) for h in horses
+            ]
+            extras.execute_values(
+                cursor,
+                "INSERT INTO race_horses (race_id, horse_name, strategy, stats_json) VALUES %s;",
+                horse_data
+            )
+            conn.commit()
+            logging.info(f"Successfully created race #{race_id} in the database.")
+        except psycopg2.Error as e:
+            logging.error(f"Error creating race: {e}")
+            conn.rollback()
+    conn.close()
 
 def place_bet_transaction(race_id, bettor_id, horse_name, amount, odds) -> bool:
     """
@@ -123,3 +152,12 @@ def place_bet_transaction(race_id, bettor_id, horse_name, amount, odds) -> bool:
     conn.close()
 
 # We can add more functions here later as needed (e.g., for payouts, creating races, etc.)
+
+if __name__ == "__main__":
+    """
+    This block will only run when the script is executed directly.
+    It's used here for one-time database setup.
+    """
+    print("Attempting to initialize the database...")
+    initialize_database()
+    print("Initialization complete.")
