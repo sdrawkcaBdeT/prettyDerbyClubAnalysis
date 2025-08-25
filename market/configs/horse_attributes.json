@@ -4,7 +4,7 @@
       "description": "Tries to get an early lead and hold it.",
       "early_race": { "mean": 120, "sigma": 20 },
       "mid_race":   { "mean": 100, "sigma": 30 },
-      "late_race":  { "mean": 80,  "sigma": 40 }
+      "late_race":  { "mean": 90,  "sigma": 40 }
     },
     "Pace Chaser": {
       "description": "Stays with the pack before making a move.",
