@@ -60,7 +60,7 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
     shop_upgrades_df = market_data_dfs['shop_upgrades']
     market_state = market_data_dfs['market_state'].set_index('state_name')['value']
 
-    # --- NEW: Event Handling for Earnings ---
+    # --- Event Handling for Earnings ---
     active_event_name = str(market_state.get('active_event', 'None'))
     performance_yield_modifier = 1.0
     if active_event_name == "Headwind on the Back Stretch":
@@ -105,14 +105,37 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
         total_personal_cc_earned = base_cc_earned + hype_bonus_yield
         
         crew_coins_df.loc[inGameName, 'balance'] += round(total_personal_cc_earned)
-
+        
         shareholders = portfolios_df[portfolios_df['stock_inGameName'] == inGameName]
-        if not shareholders.empty:
-            largest_shareholder = shareholders.loc[shareholders['shares_owned'].idxmax()]
+        # Step 1: Create an external_shareholders DataFrame that excludes the earner themselves.
+        external_shareholders = shareholders[shareholders['investor_discord_id'] != discord_id].copy()
+
+        # Step 2: If there are no external shareholders, skip all dividend logic.
+        if not external_shareholders.empty:
+            # --- TIER 1: SPONSORSHIP DIVIDEND ---
+            largest_shareholder = external_shareholders.loc[external_shareholders['shares_owned'].idxmax()]
             sponsor_discord_id = str(largest_shareholder['investor_discord_id'])
-            # Increased the sponsorship dividend from 10% to 25%
-            sponsorship_dividend = 0.25 * total_personal_cc_earned
+            
+            # Step 3: Change sponsorship dividend from 0.10 to 0.20
+            sponsorship_dividend = 0.20 * total_personal_cc_earned
             dividend_payouts[sponsor_discord_id] = dividend_payouts.get(sponsor_discord_id, 0) + sponsorship_dividend
+            
+            # --- TIER 2: PROPORTIONAL DIVIDEND ---
+            # Step 4: Create the 10% proportional dividend pool
+            proportional_dividend_pool = 0.10 * total_personal_cc_earned
+            
+            # Step 5: Filter for the rest of the shareholders
+            other_shareholders = external_shareholders[external_shareholders['investor_discord_id'] != sponsor_discord_id]
+            
+            # Step 6: If there are other shareholders, distribute the proportional pool
+            if not other_shareholders.empty:
+                total_other_shares = other_shareholders['shares_owned'].sum()
+                if total_other_shares > 0:
+                    for _, shareholder in other_shareholders.iterrows():
+                        investor_id = str(shareholder['investor_discord_id'])
+                        proportion = shareholder['shares_owned'] / total_other_shares
+                        proportional_payout = proportional_dividend_pool * proportion
+                        dividend_payouts[investor_id] = dividend_payouts.get(investor_id, 0) + proportional_payout
             
         # Format the timestamp to a clean string without microseconds
         timestamp_str = run_timestamp.strftime('%Y-%m-%d %H:%M:%S%z')
