@@ -44,7 +44,7 @@ def update_lag_index(run_timestamp):
     hours_elapsed = (run_timestamp - last_check_time).total_seconds() / 3600
     
     # Base 3% chance of change per 24 hours. Scale it to the time elapsed.
-    prob_of_no_change = 0.97 ** (hours_elapsed / 24)
+    prob_of_no_change = 0.94 ** (hours_elapsed / 24)
     
     announcement = None
     
@@ -118,7 +118,7 @@ def clear_and_check_events(run_timestamp):
             last_check_time = pd.to_datetime(last_check_str).tz_convert('US/Central')
             hours_elapsed = (run_timestamp - last_check_time).total_seconds() / 3600
         
-        trigger_chance = 1 - (0.995 ** hours_elapsed)
+        trigger_chance = 1 - (0.98 ** hours_elapsed)
         if np.random.rand() < trigger_chance:
             market_events_df = pd.read_csv('market/market_events.csv')
             if not market_events_df.empty:
