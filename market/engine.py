@@ -90,6 +90,73 @@ def get_player_condition(enriched_df, member_name):
     multiplier = min_mult + (normalized_std * (max_mult - min_mult))
     return multiplier
 
+def calculate_individual_nudges(market_data_dfs, run_timestamp):
+    """
+    Ranks players by their fan gain over the last 24 hours and applies a
+    prorated, tiered nudge to their permanent nudge_bonus.
+    """
+    print("Calculating individual prestige nudges based on 24h fan gain...")
+    enriched_df = market_data_dfs['enriched_fan_log']
+    market_state = market_data_dfs['market_state']
+    
+    # --- 1. Determine Time Windows ---
+    last_run_str = market_state.loc[market_state['state_name'] == 'last_run_timestamp', 'value'].iloc[0]
+    last_run_timestamp = pd.to_datetime(last_run_str).tz_convert('UTC')
+    current_timestamp_utc = run_timestamp.tz_convert('UTC')
+    one_day_ago = current_timestamp_utc - timedelta(days=1)
+    
+    # --- 2. Calculate Fan Gains in the Last 24 Hours ---
+    perf_window_df = enriched_df[
+        (enriched_df['timestamp'] > one_day_ago) &
+        (enriched_df['timestamp'] <= current_timestamp_utc)
+    ].copy()
+
+    if perf_window_df.empty:
+        print("No fan gain data in the last 24 hours. Skipping nudges.")
+        return
+
+    daily_fan_gains = perf_window_df.groupby('inGameName')['fanGain'].sum().reset_index()
+    
+    # --- 3. Rank Players and Assign Tiered Nudge ---
+    daily_fan_gains['rank'] = daily_fan_gains['fanGain'].rank(method='first', ascending=False)
+    
+    def assign_nudge(rank):
+        if 1 <= rank <= 3: return 0.5
+        if 4 <= rank <= 6: return 0.4
+        if 7 <= rank <= 9: return 0.3
+        if 10 <= rank <= 12: return 0.2
+        if 13 <= rank <= 15: return 0.1
+        if 16 <= rank <= 18: return -0.1
+        if 19 <= rank <= 21: return -0.2
+        if 22 <= rank <= 24: return -0.3
+        if 25 <= rank <= 27: return -0.4
+        return -0.5
+
+    daily_fan_gains['base_nudge'] = daily_fan_gains['rank'].apply(assign_nudge)
+
+    # --- 4. Calculate Prorated Nudge and Apply ---
+    time_passed_hrs = (current_timestamp_utc - last_run_timestamp).total_seconds() / 3600
+    if time_passed_hrs == 0: return
+    
+    proration_factor = time_passed_hrs / 24.0
+    daily_fan_gains['prorated_nudge'] = daily_fan_gains['base_nudge'] * proration_factor
+
+    nudge_file = 'market/prestige_nudges.csv'
+    if os.path.exists(nudge_file):
+        nudges_df = pd.read_csv(nudge_file)
+    else:
+        nudges_df = pd.DataFrame(columns=['inGameName', 'nudge_bonus'])
+        
+    all_members_df = enriched_df[['inGameName']].drop_duplicates()
+    nudges_df = pd.merge(all_members_df, nudges_df, on='inGameName', how='left').fillna(0)
+    
+    final_nudges = pd.merge(nudges_df, daily_fan_gains[['inGameName', 'prorated_nudge']], on='inGameName', how='left').fillna(0)
+    final_nudges['nudge_bonus'] += final_nudges['prorated_nudge']
+
+    # --- 5. Save the results ---
+    final_nudges[['inGameName', 'nudge_bonus']].to_csv(nudge_file, index=False)
+    print("Prestige nudges calculated and saved.")
+
 def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
     """
     The main pricing engine. Calculates new prices and writes them to a history log.
@@ -99,6 +166,13 @@ def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
     market_state_df = market_data_dfs['market_state']
     market_state = market_state_df.set_index('state_name')['value']
     portfolios_df = market_data_dfs['portfolios']
+    
+    # --- Load the nudge data ---
+    nudge_file = 'market/prestige_nudges.csv'
+    if os.path.exists(nudge_file):
+        nudges_df = pd.read_csv(nudge_file)
+    else:
+        nudges_df = pd.DataFrame(columns=['inGameName', 'nudge_bonus'])
     
     active_event_name = str(market_state.get('active_event', 'None'))
     
@@ -136,11 +210,17 @@ def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
         lag_override = event_modifiers['lag'].get(name)
         
         prestige_floor = get_prestige_floor(prestige, random_factor)
+        
+        # --- Apply the individual nudge bonus ---
+        member_nudge = nudges_df[nudges_df['inGameName'] == name]
+        nudge_bonus = member_nudge['nudge_bonus'].iloc[0] if not member_nudge.empty else 0
+        nudged_floor = prestige_floor + nudge_bonus
+        
         lagged_avg_gain = get_lagged_average(enriched_df, name, market_state, run_timestamp, override_hours=lag_override)
         stochastic_jitter = np.random.normal(1.0, 0.08)
         
         performance_value = (lagged_avg_gain / 8757) * club_sentiment * stochastic_jitter
-        core_value = prestige_floor + performance_value
+        core_value = nudged_floor + performance_value
         
         player_condition = event_modifiers['condition'].get(name, get_player_condition(enriched_df, name))
         price_modifier = event_modifiers['price'].get(name, 1.0)

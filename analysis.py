@@ -11,7 +11,7 @@ import matplotlib.font_manager as fm
 import csv
 import ast # Required for parsing the lag options
 from market.economy import load_market_data, process_cc_earnings
-from market.engine import update_all_stock_prices
+from market.engine import update_all_stock_prices, calculate_individual_nudges
 from market.events import clear_and_check_events, update_lag_index
 
 # --- Configuration ---
@@ -199,6 +199,10 @@ def main():
     updated_crew_coins_df['balance'] = updated_crew_coins_df['balance'].round().astype(int)
     updated_crew_coins_df.to_csv('market/crew_coins.csv', index=False)
     print("Successfully updated crew_coins.csv and logged balance_history.csv.")
+    
+    print("\nCalculating Individual Performance Nudges...")
+    all_market_dfs = {**initial_market_data, 'crew_coins': updated_crew_coins_df, 'enriched_fan_log': fanlog_df}
+    calculate_individual_nudges(all_market_dfs, run_timestamp)
 
     print("\nRunning Baggins Index Price Engine...")
     all_market_dfs = {**initial_market_data, 'crew_coins': updated_crew_coins_df}
