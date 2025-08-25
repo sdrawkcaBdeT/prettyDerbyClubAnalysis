@@ -1,6 +1,7 @@
 import json
 import random
 import numpy as np
+from copy import deepcopy
 
 class Horse:
     """
@@ -158,7 +159,7 @@ class Race:
         sorted_results = sorted(self.horses, key=lambda h: self.positions[h.name], reverse=True)
         return sorted_results
     
-# --- Test Code ---
+# --- Race Test Code ---
 # (Assume the Horse class and some test horses are defined)
 # test_horses = [Horse("Iron Fury", "Pace Chaser"), Horse("Broken Bullet", "Front Runner"), Horse("Nice Nature", "Late Surger"), Horse("Broken Cheater", "End Closer"), Horse("Inspector Gadget", "Pace Chaser"), Horse("Thunder Wave", "End Closer")]
 # race = Race(test_horses, distance=1600)
@@ -175,3 +176,90 @@ class Race:
 # print("\n--- Full Race Log ---")
 # for entry in race.log:
 #     print(entry)
+
+import json
+import random
+import numpy as np
+from copy import deepcopy # Needed for Monte Carlo simulation
+
+# (The Horse and Race classes from the previous epic remain here)
+
+class Bookie:
+    """
+    Manages the odds and betting for a given race, acting as the house.
+    """
+    
+    def __init__(self, race_to_manage, house_vig=0.08):
+        """
+        Initializes the Bookie.
+
+        Args:
+            race_to_manage (Race): The Race object this bookie is managing.
+            house_vig (float): The house edge or "vig" (e.g., 0.08 for 8%).
+        """
+        self.race = race_to_manage
+        self.house_vig = house_vig
+        self.morning_line_odds = {}
+
+    def _calculate_odds_from_win_rate(self, win_rate: float) -> float:
+        """
+        Converts a win probability into fractional betting odds,
+        including the house vig.
+        """
+        if win_rate == 0:
+            return float('inf') # A horse that never wins has infinite odds
+        
+        # Fair odds are 1 / probability
+        fair_odds = (1 / win_rate) - 1
+        
+        # Add the house edge
+        final_odds = fair_odds * (1 - self.house_vig)
+        
+        return max(0.1, final_odds) # Ensure odds are never zero or negative
+
+    def run_monte_carlo(self, simulations: int = 10000):
+        """
+        Runs a Monte Carlo simulation to determine the win probabilities
+        for each horse and sets the morning line odds.
+        """
+        print(f"Running Monte Carlo simulation with {simulations} iterations...")
+        win_counts = {horse.name: 0 for horse in self.race.horses}
+
+        for i in range(simulations):
+            # Create a deep copy of the race to run an independent simulation
+            sim_race = deepcopy(self.race)
+            
+            while not sim_race.is_finished():
+                sim_race.run_round()
+            
+            # The winner is the first horse in the sorted results list
+            winner = sim_race.get_results()[0]
+            win_counts[winner.name] += 1
+            
+            if (i + 1) % 1000 == 0:
+                print(f"  ...completed {i + 1}/{simulations} simulations.")
+
+        # Calculate win rates and convert to odds
+        for horse_name, wins in win_counts.items():
+            win_rate = wins / simulations
+            odds = self._calculate_odds_from_win_rate(win_rate)
+            self.morning_line_odds[horse_name] = {
+                "win_rate": win_rate,
+                "odds": odds
+            }
+        
+        print("Monte Carlo simulation complete. Morning line odds are set.")
+        
+# # --- Simulation Test Code ---
+# test_horses = [Horse("Iron Fury", "Pace Chaser"), Horse("BOT Bullet", "Front Runner"), Horse("Nice Nature", "Late Surger"), Horse("Broken Cheater", "End Closer"), Horse("Inspector Gadget", "Pace Chaser"), Horse("Thunder Wave", "End Closer")]
+# for horse in test_horses:
+#     horse.display_stats()
+# race = Race(test_horses, distance=1600)
+
+# bookie = Bookie(race)
+# bookie.run_monte_carlo(simulations=10000) # Use a lower number for faster testing if needed
+
+# print("\n--- Morning Line Odds ---")
+# for name, data in bookie.morning_line_odds.items():
+#     # Fractional odds are often displayed as "X to 1"
+#     print(f"{name}: {data['odds']:.2f} to 1 (Win Rate: {data['win_rate']:.2%})")
