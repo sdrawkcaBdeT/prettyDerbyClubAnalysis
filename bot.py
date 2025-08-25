@@ -1632,7 +1632,7 @@ async def run_complete_race(bot, channel, message, race):
         # --- PHASE 1: BETTING COUNTDOWN ---
         print(f"Starting countdown for Race ID: {race.race_id}")
         start_time = datetime.now(pytz.utc)
-        duration = timedelta(seconds=20) # Change to seconds=20 for testing
+        duration = timedelta(seconds=120) # Change to seconds=120 for testing
         
         # Get a list of all sniper bots from your definitions
         sniper_bots = [name for name, props in BOT_PERSONALITIES.items() if props['type'] == 'sniper']
@@ -1892,7 +1892,7 @@ async def race(ctx):
 
 @commands.cooldown(1, 300, commands.BucketType.user)
 @race.command(name="create")
-async def race_create(ctx, num_horses: int = 10, track_length: int = 40):
+async def race_create(ctx, num_horses: int = 10, track_length: int = 60):
     """Creates a new horse race and starts the game loop. Defaults to 10 horses."""
     
     VALID_HORSE_COUNTS = [8, 9, 10, 16, 18]
