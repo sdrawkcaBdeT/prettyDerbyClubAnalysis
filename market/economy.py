@@ -81,8 +81,8 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
         perf_prestige = member.get('performancePrestigePoints', 0)
         tenure_prestige = member.get('tenurePrestigePoints', 0)
         
-        # Increased performance multiplier from 1.25 to 1.75
-        perf_multiplier = get_upgrade_value(shop_upgrades_df, discord_id, "Study Race Tapes", 1.75, 0.15)
+        # Increased performance multiplier upgrade to 2.75 per tier
+        perf_multiplier = get_upgrade_value(shop_upgrades_df, discord_id, "Study Race Tapes", 1.75, 2.75)
         
         # Increased flat bonus from 0 to 2
         perf_flat_bonus = get_upgrade_value(shop_upgrades_df, discord_id, "Perfect the Starting Gate", 2, 3)
