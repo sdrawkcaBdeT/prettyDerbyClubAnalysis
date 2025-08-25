@@ -200,6 +200,8 @@ class Bookie:
         self.race = race_to_manage
         self.house_vig = house_vig
         self.morning_line_odds = {}
+        self.bets = [] # Using an in-memory list as discussed
+        self.total_liability = {horse.name: 0 for horse in self.race.horses}
 
     def _calculate_odds_from_win_rate(self, win_rate: float) -> float:
         """
@@ -249,6 +251,37 @@ class Bookie:
             }
         
         print("Monte Carlo simulation complete. Morning line odds are set.")
+        
+    def place_bet(self, bettor_id: str, horse_name: str, amount: int):
+        if horse_name not in self.morning_line_odds:
+            print(f"Error: No odds found for horse '{horse_name}'.")
+            return None
+        locked_in_odds = self.morning_line_odds[horse_name]['odds']
+        bet_details = {
+            "bettor_id": bettor_id,
+            "horse_name": horse_name,
+            "amount": amount,
+            "locked_in_odds": locked_in_odds
+        }
+        self.bets.append(bet_details)
+        potential_winnings = amount * locked_in_odds
+        self.total_liability[horse_name] += potential_winnings
+        print(f"Bet placed: {bettor_id} bets {amount} CC on {horse_name} at {locked_in_odds:.2f} to 1.")
+        return bet_details
+
+    def calculate_payouts(self, winning_horse_name: str) -> list:
+        payouts = []
+        print(f"\n--- Calculating Payouts for Winner: {winning_horse_name} ---")
+        winning_bets = [b for b in self.bets if b['horse_name'] == winning_horse_name]
+        if not winning_bets:
+            print("No winning bets were placed.")
+            return payouts
+        for bet in winning_bets:
+            winnings = bet['amount'] * bet['locked_in_odds']
+            total_return = bet['amount'] + winnings
+            payouts.append({ "bettor_id": bet['bettor_id'], "winnings": total_return })
+            print(f"  - {bet['bettor_id']} wins {total_return:,.2f} CC (initial {bet['amount']} CC bet).")
+        return payouts
         
 # # --- Simulation Test Code ---
 # test_horses = [Horse("Iron Fury", "Pace Chaser"), Horse("BOT Bullet", "Front Runner"), Horse("Nice Nature", "Late Surger"), Horse("Broken Cheater", "End Closer"), Horse("Inspector Gadget", "Pace Chaser"), Horse("Thunder Wave", "End Closer")]
