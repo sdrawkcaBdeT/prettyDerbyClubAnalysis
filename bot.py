@@ -250,6 +250,25 @@ def log_market_transaction(actor_id, transaction_type, target_id, item_name, ite
             timestamp, actor_id, transaction_type, target_id,
             item_name, item_quantity, cc_amount, fee_paid
         ])
+
+def log_exchange_tax(actor_id, transaction_type, target_name, fee_paid):
+    """Logs the broker fee from a transaction to the tax stash."""
+    log_file = 'market/exchange_tax_stash.csv'
+    file_exists = os.path.isfile(log_file)
+    central_tz = pytz.timezone('US/Central')
+    now = datetime.now(central_tz)
+    timestamp_str = now.strftime('%Y-%m-%d %H:%M:%S%z')
+    timestamp = f"{timestamp_str[:-2]}:{timestamp_str[-2:]}"
+
+    with open(log_file, 'a', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow([
+                'timestamp', 'actor_id', 'transaction_type', 'target_name', 'fee_paid'
+            ])
+        writer.writerow([
+            timestamp, actor_id, transaction_type, target_name, fee_paid
+        ])
         
 def get_name_from_ticker_or_name(identifier: str):
     """
@@ -1385,12 +1404,10 @@ async def invest(ctx, *, member_and_amount: str):
         target_id_row = crew_coins_df[crew_coins_df['inGameName'] == target_name]
         target_id = target_id_row['discord_id'].iloc[0] if not target_id_row.empty else 'N/A'
         log_market_transaction(actor_id=investor_id, transaction_type='INVEST', target_id=target_id, item_name=f"{target_name}'s Stock", item_quantity=shares_purchased, cc_amount=-cc_amount, fee_paid=broker_fee)
+        log_exchange_tax(actor_id=investor_id, transaction_type='INVEST', target_name=target_name, fee_paid=broker_fee)
 
         embed = discord.Embed(title="✅ Investment Successful", color=discord.Color.green())
-        embed.description = (
-            f"You invested **{format_cc(cc_amount)}** into **{target_name}**.\n"
-            f"After a {broker_fee_rate:.1%} Broker's Fee ({format_cc(broker_fee)}), you purchased **{shares_purchased:,.2f} shares**."
-        )
+        embed.description = (f"You invested **{format_cc(cc_amount)}** into **{target_name}**.\n")
         # Add the new balance to the footer
         embed.set_footer(text=f"Your new balance is {format_cc(new_balance)}")
         await ctx.send(embed=embed)
@@ -1472,6 +1489,7 @@ async def sell(ctx, *, member_and_shares: str):
         target_id = target_id_row['discord_id'].iloc[0] if not target_id_row.empty else 'N/A'
         
         log_market_transaction(actor_id=seller_id, transaction_type='SELL', target_id=target_id, item_name=f"{target_name}'s Stock", item_quantity=-shares_to_sell, cc_amount=net_proceeds, fee_paid=broker_fee)
+        log_exchange_tax(actor_id=seller_id, transaction_type='SELL', target_name=target_name, fee_paid=broker_fee)
         
         embed = discord.Embed(title="✅ Sale Successful", color=discord.Color.red())
         embed.description = f"You sold **{shares_to_sell:,.2f} shares** of **{target_name}** for a gross value of {format_cc(gross_value)}.\nAfter a {broker_fee_rate:.1%} Broker's Fee ({format_cc(broker_fee)}), you received **{format_cc(net_proceeds)}**."
