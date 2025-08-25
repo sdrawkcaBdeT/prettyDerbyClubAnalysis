@@ -1,9 +1,26 @@
 import pandas as pd
 import numpy as np
 import random
-from datetime import timedelta
+from datetime import timedelta, datetime
+import pytz
 import os
 import ast # For safely evaluating the string representation of a list
+
+def _ensure_aware_utc(dt_object):
+    """
+    Ensures a datetime object is timezone-aware and converted to UTC.
+    If the object is naive, it's assumed to be in US/Central.
+    """
+    if dt_object.tzinfo is None:
+        # It's naive, so we must first make it aware.
+        central_tz = pytz.timezone('US/Central')
+        aware_dt = central_tz.localize(dt_object)
+    else:
+        # It's already aware.
+        aware_dt = dt_object
+    
+    # Now that we're certain it's aware, we can safely convert to UTC.
+    return aware_dt.astimezone(pytz.utc)
 
 def get_prestige_floor(prestige, random_init_factor):
     """Calculates the baseline stock value based on prestige and a random factor."""
@@ -99,10 +116,27 @@ def calculate_individual_nudges(market_data_dfs, run_timestamp):
     enriched_df = market_data_dfs['enriched_fan_log']
     market_state = market_data_dfs['market_state']
     
-    # --- 1. Determine Time Windows ---
-    last_run_str = market_state.loc[market_state['state_name'] == 'last_run_timestamp', 'value'].iloc[0]
-    last_run_timestamp = pd.to_datetime(last_run_str).tz_convert('UTC')
-    current_timestamp_utc = run_timestamp.tz_convert('UTC')
+        # --- 1. Determine Time Window (Final, Corrected Logic) ---
+    last_run_timestamp = None
+    market_state_df = market_data_dfs['market_state']
+
+    # We prioritize the new 'last_run_timestamp' if it exists.
+    last_run_series = market_state_df.loc[market_state_df['state_name'] == 'last_run_timestamp', 'value']
+    
+    if not last_run_series.empty and pd.notna(last_run_series.iloc[0]):
+        # On all runs AFTER the first, this block will execute.
+        last_run_timestamp = pd.to_datetime(last_run_series.iloc[0]).tz_convert('UTC')
+    else:
+        # On the VERY FIRST run, this block will execute.
+        # We use 'last_event_check_timestamp' as the starting point.
+        event_check_series = market_state_df.loc[market_state_df['state_name'] == 'last_event_check_timestamp', 'value']
+        if not event_check_series.empty and pd.notna(event_check_series.iloc[0]):
+            last_run_timestamp = pd.to_datetime(event_check_series.iloc[0]).tz_convert('UTC')
+        else:
+            # This is a final safety net in case the file is malformed.
+            print("CRITICAL: Cannot find a valid start timestamp. Nudge calculation aborted.")
+            return
+    current_timestamp_utc = _ensure_aware_utc(run_timestamp)
     one_day_ago = current_timestamp_utc - timedelta(days=1)
     
     # --- 2. Calculate Fan Gains in the Last 24 Hours ---

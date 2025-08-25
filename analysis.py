@@ -210,6 +210,15 @@ def main():
     updated_stocks_df.to_csv('market/stock_prices.csv', index=False, float_format='%.2f')
     updated_market_state_df.to_csv('market/market_state.csv', index=False)
     print("Successfully updated stock_prices.csv and logged stock_price_history.csv.")
+    
+    # Check if the row exists
+    if 'last_run_timestamp' in updated_market_state_df['state_name'].values:
+        # If it exists, update it
+        updated_market_state_df.loc[updated_market_state_df['state_name'] == 'last_run_timestamp', 'value'] = run_timestamp
+    else:
+        # If it doesn't exist, create it
+        new_row = pd.DataFrame([{'state_name': 'last_run_timestamp', 'value': run_timestamp}])
+        updated_market_state_df = pd.concat([updated_market_state_df, new_row], ignore_index=True)
 
     print("\n--- Checking for Market Events ---")
     # Check for a lag shift and capture the announcement
