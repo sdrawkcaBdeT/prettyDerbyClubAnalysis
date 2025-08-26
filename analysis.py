@@ -10,9 +10,10 @@ import matplotlib.patheffects as pe
 import matplotlib.font_manager as fm
 import csv
 import ast # Required for parsing the lag options
-from market.economy import load_market_data, process_cc_earnings
+from market.economy import process_cc_earnings
 from market.engine import update_all_stock_prices, calculate_individual_nudges
 from market.events import clear_and_check_events, update_lag_index
+from market.database import get_market_data_from_db, save_all_market_data_to_db
 
 # --- Configuration ---
 MEMBERS_CSV = 'members.csv'
@@ -22,7 +23,6 @@ OUTPUT_DIR = 'Club_Report_Output'
 
 def _format_timestamp(dt_object):
     """Formats a datetime object into the consistent ecosystem format."""
-    # Example: 2025-08-23 10:56:33-05:00
     base_str = dt_object.strftime('%Y-%m-%d %H:%M:%S%z')
     return f"{base_str[:-2]}:{base_str[-2:]}"
 
@@ -31,7 +31,6 @@ def log_market_snapshot(run_timestamp, market_state):
     log_file = 'market/market_snapshot_log.csv'
     file_exists = os.path.isfile(log_file)
 
-    # --- Determine the active lag in days ---
     try:
         lag_options_str = market_state.get('lag_options', "[0]")
         lag_options = ast.literal_eval(lag_options_str)
@@ -39,7 +38,7 @@ def log_market_snapshot(run_timestamp, market_state):
         if active_cursor >= len(lag_options): active_cursor = 0
         active_lag_days = lag_options[active_cursor]
     except Exception:
-        active_lag_days = -1 # Log -1 on error
+        active_lag_days = -1
 
     snapshot_data = {
         'timestamp': _format_timestamp(run_timestamp),
@@ -126,10 +125,8 @@ def main():
 
     print("\n--- 2. Performing Core Analysis ---")
 
-    # Sort all data by timestamp before doing any calculations
     fanlog_df = fanlog_df.sort_values(by=['inGameName', 'timestamp'])
 
-    # --- Prestige Calculations (Task 1.1) ---
     fanlog_df['previousFanCount'] = fanlog_df.groupby('inGameName')['fanCount'].shift(1)
     fanlog_df['fanGain'] = fanlog_df['fanCount'] - fanlog_df['previousFanCount']
     fanlog_df['fanGain'].fillna(0, inplace=True)
@@ -140,19 +137,14 @@ def main():
     fanlog_df['tenurePrestigePoints'] = 20 * (fanlog_df['timeDiffMinutes'] / 1440)
     fanlog_df['prestigeGain'] = fanlog_df['performancePrestigePoints'] + fanlog_df['tenurePrestigePoints']
 
-    # --- NEW: Dual-Track Prestige Calculation (Task 1.2 & 1.3) ---
-    # Lifetime Prestige: Cumulative sum over all time for each member
     fanlog_df['lifetimePrestige'] = fanlog_df.groupby('inGameName')['prestigeGain'].cumsum()
 
-    # Monthly Prestige: Cumulative sum within the current month window
     monthly_fan_log = fanlog_df[(fanlog_df['timestamp'] >= start_date) & (fanlog_df['timestamp'] <= end_date)].copy()
     monthly_fan_log['monthlyPrestige'] = monthly_fan_log.groupby('inGameName')['prestigeGain'].cumsum()
     
-    # Merge monthly prestige back into the main dataframe
     fanlog_df = pd.merge(fanlog_df, monthly_fan_log[['inGameName', 'timestamp', 'monthlyPrestige']], on=['inGameName', 'timestamp'], how='left')
-    fanlog_df['monthlyPrestige'].fillna(0, inplace=True) # Fill prestige for entries outside the current month
+    fanlog_df['monthlyPrestige'].fillna(0, inplace=True)
 
-    # This block calculates the rank name based on monthly prestige points (Task 1.4)
     ranks_df_sorted = ranks_df.sort_values('prestige_required', ascending=False)
     def get_rank_details(monthly_prestige):
         for _, rank_row in ranks_df_sorted.iterrows():
@@ -161,7 +153,6 @@ def main():
         return "Unranked"
     fanlog_df['prestigeRank'] = fanlog_df['monthlyPrestige'].apply(get_rank_details)
 
-    # This block calculates the points needed for the next rank
     next_rank_req = ranks_df.set_index('rank_name')['prestige_required'].shift(-1).to_dict()
     def get_points_to_next_rank(row):
         current_rank = row['prestigeRank']
@@ -171,8 +162,7 @@ def main():
     fanlog_df['pointsToNextRank'] = fanlog_df.apply(get_points_to_next_rank, axis=1)
     fanlog_df['date'] = fanlog_df['timestamp'].dt.date
     
-    print("\n--- 3. Saving Enriched Fan Log (Task 1.5) ---")
-    # Note: The old 'cumulativePrestige' column is no longer here
+    print("\n--- 3. Saving Enriched Fan Log ---")
     fanlog_df.to_csv('enriched_fan_log.csv', index=False)
     print("  - Successfully created enriched_fan_log.csv")
     
@@ -183,52 +173,48 @@ def main():
     
     run_timestamp = generation_ct 
 
-    initial_market_data = load_market_data()
+    # --- REFACTOR: Load data from the database ---
+    initial_market_data = get_market_data_from_db()
     if not initial_market_data:
-        print("FATAL: Could not load market data. Halting Fan Exchange processing.")
+        print("FATAL: Could not load market data from database. Halting Fan Exchange processing.")
         return
     
-    # Convert the market_state DataFrame to a Series
     market_state_series = initial_market_data['market_state'].set_index('state_name')['value']
-
-    # Log the state of the market *before* any calculations are run.
     log_market_snapshot(run_timestamp, market_state_series)
  
     print("Running CC Earnings Engine...")
-    updated_crew_coins_df = process_cc_earnings(fanlog_df, initial_market_data, run_timestamp)
-    updated_crew_coins_df['balance'] = updated_crew_coins_df['balance'].round().astype(int)
-    updated_crew_coins_df.to_csv('market/crew_coins.csv', index=False)
-    print("Successfully updated crew_coins.csv and logged balance_history.csv.")
+    # --- REFACTOR: process_cc_earnings now returns transactions to be logged ---
+    updated_balances_df, new_transactions = process_cc_earnings(fanlog_df, initial_market_data, run_timestamp)
     
     print("\nCalculating Individual Performance Nudges...")
-    all_market_dfs = {**initial_market_data, 'crew_coins': updated_crew_coins_df, 'enriched_fan_log': fanlog_df}
+    # We use the updated balances for nudge calculations
+    all_market_dfs = {**initial_market_data, 'crew_coins': updated_balances_df, 'enriched_fan_log': fanlog_df}
     calculate_individual_nudges(all_market_dfs, run_timestamp)
 
     print("\nRunning Baggins Index Price Engine...")
-    all_market_dfs = {**initial_market_data, 'crew_coins': updated_crew_coins_df}
+    all_market_dfs = {**initial_market_data, 'crew_coins': updated_balances_df}
     updated_stocks_df, updated_market_state_df = update_all_stock_prices(fanlog_df, all_market_dfs, run_timestamp)
-    updated_stocks_df.to_csv('market/stock_prices.csv', index=False, float_format='%.2f')
-    updated_market_state_df.to_csv('market/market_state.csv', index=False)
-    print("Successfully updated stock_prices.csv and logged stock_price_history.csv.")
     
-    # Check if the row exists
+    # --- REFACTOR: Save all data back to the database in one transaction ---
+    print("\nSaving all market data to the database...")
+    save_all_market_data_to_db(updated_balances_df, updated_stocks_df, new_transactions)
+    
+    # We still save the non-migrated market_state CSV
+    updated_market_state_df.to_csv('market/market_state.csv', index=False)
+    
     if 'last_run_timestamp' in updated_market_state_df['state_name'].values:
-        # If it exists, update it
         updated_market_state_df.loc[updated_market_state_df['state_name'] == 'last_run_timestamp', 'value'] = run_timestamp
     else:
-        # If it doesn't exist, create it
         new_row = pd.DataFrame([{'state_name': 'last_run_timestamp', 'value': run_timestamp}])
         updated_market_state_df = pd.concat([updated_market_state_df, new_row], ignore_index=True)
 
     print("\n--- Checking for Market Events ---")
-    # Check for a lag shift and capture the announcement
     lag_announcement = update_lag_index(run_timestamp)
     if lag_announcement:
         print(f"Queueing announcement: {lag_announcement}")
         with open("announcements.txt", "a") as f:
             f.write(lag_announcement + "\n")
 
-    # Check for a new market event and capture the announcement
     event_announcement = clear_and_check_events(run_timestamp)
     if event_announcement:
         full_event_message = f"🎉 **Market Event!** {event_announcement}"
