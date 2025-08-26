@@ -79,6 +79,29 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
         
         balance_map[inGameName] += total_personal_cc_earned
         
+        # --- NEW: Create detailed JSON for the earnings transaction ---
+        details_json = json.dumps({
+            'performance_yield': round(performance_yield, 2),
+            'tenure_yield': round(tenure_yield, 2),
+            'hype_bonus_yield': round(hype_bonus_yield, 2),
+            'base_cc_earned': round(base_cc_earned, 2),
+            'hype_multiplier': round(hype_bonus_multiplier, 4)
+        })
+
+        new_transaction_records.append({
+            'timestamp': run_timestamp,
+            'actor_id': discord_id,
+            'target_id': 'SYSTEM',
+            'transaction_type': 'PERIODIC_EARNINGS',
+            'item_name': 'Personal Earnings',
+            'item_quantity': None,
+            'cc_amount': total_personal_cc_earned,
+            'fee_paid': 0,
+            'details': details_json,
+            'balance_after': None # To be filled later
+        })
+        
+        # --- Dividend Logic (with enhanced logging) ---
         shareholders = portfolios_df[portfolios_df['stock_inGameName'] == inGameName]
         external_shareholders = shareholders[shareholders['investor_discord_id'] != discord_id].copy()
 
@@ -87,7 +110,8 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
             sponsor_discord_id = str(largest_shareholder['investor_discord_id'])
             
             sponsorship_dividend = 0.20 * total_personal_cc_earned
-            dividend_payouts[sponsor_discord_id] = dividend_payouts.get(sponsor_discord_id, 0) + sponsorship_dividend
+            # Use a tuple to store amount and source for detailed logging
+            dividend_payouts[sponsor_discord_id] = dividend_payouts.get(sponsor_discord_id, []) + [(sponsorship_dividend, inGameName)]
             
             proportional_dividend_pool = 0.10 * total_personal_cc_earned
             other_shareholders = external_shareholders[external_shareholders['investor_discord_id'] != sponsor_discord_id]
@@ -99,62 +123,52 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
                         investor_id = str(shareholder['investor_discord_id'])
                         proportion = shareholder['shares_owned'] / total_other_shares
                         proportional_payout = proportional_dividend_pool * proportion
-                        dividend_payouts[investor_id] = dividend_payouts.get(investor_id, 0) + proportional_payout
+                        dividend_payouts[investor_id] = dividend_payouts.get(investor_id, []) + [(proportional_payout, inGameName)]
 
-        # This dictionary will be converted to the details JSONB field
-        details_json = json.dumps({
-            'performance_yield': performance_yield,
-            'tenure_yield': tenure_yield,
-            'hype_bonus_yield': hype_bonus_yield
-        })
-
-        # We create a record for the user's personal earnings
-        new_transaction_records.append((
-            run_timestamp,
-            discord_id,
-            'SYSTEM',
-            'PERIODIC_EARNINGS',
-            'Personal Earnings',
-            total_personal_cc_earned,
-            0, # fee_paid
-            details_json,
-            None # balance_after will be calculated later
-        ))
-
-    # Apply dividend payouts to the balance map
+    # --- Apply dividend payouts and create detailed transaction records ---
     discord_id_to_name_map = {v: k for k, v in id_map.items()}
-    for sponsor_id, dividend_amount in dividend_payouts.items():
-        if sponsor_id in discord_id_to_name_map:
-            target_name = discord_id_to_name_map[sponsor_id]
-            balance_map[target_name] += dividend_amount
+    for sponsor_id, payouts in dividend_payouts.items():
+        for amount, source_name in payouts:
+            if sponsor_id in discord_id_to_name_map:
+                target_name = discord_id_to_name_map[sponsor_id]
+                balance_map[target_name] += amount
 
-            # Log a separate transaction for the dividend
-            new_transaction_records.append((
-                run_timestamp,
-                sponsor_id,
-                'SYSTEM',
-                'DIVIDEND',
-                'Dividend Payout',
-                dividend_amount,
-                0, # fee_paid
-                None, # details
-                None # balance_after
-            ))
+                # --- NEW: Create detailed JSON for the dividend transaction ---
+                dividend_details = json.dumps({
+                    'source_player': source_name,
+                    'type': 'Tier 1 Div' if source_name == largest_shareholder['stock_inGameName'] else 'Tier 2 Div'
+                })
 
-    # Convert the updated map back to a DataFrame
+                new_transaction_records.append({
+                    'timestamp': run_timestamp,
+                    'actor_id': sponsor_id,
+                    'target_id': id_map.get(source_name), # The player who generated the dividend
+                    'transaction_type': 'DIVIDEND',
+                    'item_name': f"Dividend from {source_name}",
+                    'item_quantity': None,
+                    'cc_amount': amount,
+                    'fee_paid': 0,
+                    'details': dividend_details,
+                    'balance_after': None # To be filled later
+                })
+
+    # --- Final processing to prepare for database insertion ---
     updated_balances_df = pd.DataFrame(balance_map.items(), columns=['inGameName', 'balance'])
-    # Merge to get the discord_id back for saving
     updated_balances_df = pd.merge(updated_balances_df, crew_coins_df[['inGameName', 'discord_id']], on='inGameName', how='left')
 
-    # Now, calculate the final balance_after for each transaction
     final_balance_map = updated_balances_df.set_index('discord_id')['balance'].to_dict()
     
     final_transactions = []
     for record in new_transaction_records:
-        actor_id = record[1]
-        balance_after = final_balance_map.get(actor_id)
-        # Create a new tuple with the balance_after value
-        final_transactions.append(record[:-1] + (balance_after,))
+        actor_id = record['actor_id']
+        # Update the balance_after field
+        record['balance_after'] = final_balance_map.get(actor_id)
+        # Convert record to tuple in the correct order for the DB
+        final_transactions.append((
+            record['timestamp'], record['actor_id'], record['target_id'],
+            record['transaction_type'], record['item_name'], record['item_quantity'],
+            record['cc_amount'], record['fee_paid'], record['details'], record['balance_after']
+        ))
 
-    print("CC earnings processed and transaction records created.")
+    print("CC earnings processed and detailed transaction records created.")
     return updated_balances_df, final_transactions

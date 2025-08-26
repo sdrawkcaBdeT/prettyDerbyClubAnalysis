@@ -258,7 +258,7 @@ def save_all_market_data_to_db(balances_df, stock_prices_df, new_transactions):
     Saves all updated market data to the database in a single transaction.
     - Updates balances
     - Updates stock prices (including nudge_bonus)
-    - Inserts new periodic earnings transactions
+    - Inserts new, detailed periodic earnings and dividend transactions
     """
     conn = get_connection()
     if not conn:
@@ -279,7 +279,7 @@ def save_all_market_data_to_db(balances_df, stock_prices_df, new_transactions):
             """)
             logging.info(f"Updated {len(balances_df)} rows in 'balances' table.")
 
-            # 2. Update Stock Prices (now includes nudge_bonus)
+            # 2. Update Stock Prices
             cursor.execute("CREATE TEMP TABLE temp_stock_prices (ingamename VARCHAR(255) PRIMARY KEY, current_price NUMERIC(10, 2), nudge_bonus NUMERIC(10, 4));")
             prices_tuples = list(stock_prices_df[['inGameName', 'current_price', 'nudge_bonus']].itertuples(index=False, name=None))
             extras.execute_values(cursor, "INSERT INTO temp_stock_prices (ingamename, current_price, nudge_bonus) VALUES %s", prices_tuples)
@@ -292,16 +292,28 @@ def save_all_market_data_to_db(balances_df, stock_prices_df, new_transactions):
             """)
             logging.info(f"Updated {len(stock_prices_df)} rows in 'stock_prices' table.")
 
+            # --- Convert list of dictionaries to list of tuples ---
             # 3. Insert new transactions
             if new_transactions:
+                # The new_transactions object is now a list of dictionaries.
+                # We need to convert it to a list of tuples in the correct order.
+                transaction_tuples = [
+                    (
+                        record['timestamp'], record['actor_id'], record['target_id'],
+                        record['transaction_type'], record['item_name'], record['item_quantity'],
+                        record['cc_amount'], record['fee_paid'], record['details'], record['balance_after']
+                    )
+                    for record in new_transactions
+                ]
+                
                 extras.execute_values(
                     cursor,
                     """INSERT INTO transactions 
-                       (timestamp, actor_id, target_id, transaction_type, item_name, cc_amount, fee_paid, details, balance_after) 
+                       (timestamp, actor_id, target_id, transaction_type, item_name, item_quantity, cc_amount, fee_paid, details, balance_after) 
                        VALUES %s""",
-                    new_transactions
+                    transaction_tuples
                 )
-                logging.info(f"Inserted {len(new_transactions)} new PERIODIC_EARNINGS transactions.")
+                logging.info(f"Inserted {len(new_transactions)} new transactions.")
 
             conn.commit()
             logging.info("Successfully saved all market data to the database.")
