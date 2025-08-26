@@ -183,11 +183,11 @@ def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
 
     updated_prices = []
     
-    # --- 2. CALCULATION LOOP (Your original logic, corrected sources) ---
+    # --- 2. CALCULATION LOOP ---
     for _, member_latest_data in enriched_df.groupby('inGameName').tail(1).iterrows():
         name = member_latest_data['inGameName']
         
-        # --- CORRECT: Get static data from our maps, not a separate CSV ---
+        
         random_factor = init_factor_map.get(name)
         nudge_bonus = nudge_bonus_map.get(name, 0)
         
@@ -220,6 +220,6 @@ def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
     final_stocks_df['current_price'] = final_stocks_df['current_price'].fillna(0.01)
     
     print("Baggins Index: Prices updated, logging to database history.")
-    log_stock_price_history(final_stocks_df)
+    log_stock_price_history(final_stocks_df, run_timestamp)
     
     return final_stocks_df, market_state.to_frame(name='state_value').reset_index()

@@ -40,7 +40,7 @@ def update_lag_index(market_state_df, run_timestamp):
     last_check_time = pd.to_datetime(last_check_str).tz_convert('US/Central')
     hours_elapsed = (run_timestamp - last_check_time).total_seconds() / 3600
     
-    prob_of_no_change = 0.0001 ** (hours_elapsed / 24)
+    prob_of_no_change = 0.5 ** (hours_elapsed / 24)
     announcement = None
     
     if np.random.rand() > prob_of_no_change:
@@ -61,11 +61,11 @@ def update_lag_index(market_state_df, run_timestamp):
         new_lag_days = lag_options[new_cursor]
         
         if new_lag_days < current_lag_days:
-            announcement = f"📈 **Market Intel Update:** Analysts are reacting to more recent data, shortening their analytical window."
+            announcement = f"**Market Intel Update:** Analysts are reacting to more recent data, shortening their analytical window."
         elif new_lag_days > current_lag_days:
-            announcement = f"📉 **Market Intel Update:** Analysts are taking a long-term view, extending their analytical window to focus on historical trends."
+            announcement = f"**Market Intel Update:** Analysts are taking a long-term view, extending their analytical window to focus on historical trends."
         else:
-            announcement = f"📊 **Market Intel Update:** Analysts have reaffirmed their focus. The Baggins Index continues to operate with the same analytical window."
+            announcement = f"**Market Intel Update:** Analysts have reaffirmed their focus. The Baggins Index continues to operate with the same analytical window."
 
         print(f"LAG INDEX SHIFT: New cursor is {new_cursor} ({new_lag_days} days).")
         # log_market_event("Lag Index Shift", "SHIFT", details=json.dumps({'new_lag_days': new_lag_days, 'old_lag_days': current_lag_days}))
