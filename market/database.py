@@ -78,33 +78,42 @@ def initialize_database():
     conn.close()
 
 def create_market_tables():
-    """Creates the necessary tables for the Fan Exchange market if they don't exist."""
+    """Creates and alters all necessary tables for the Fan Exchange market."""
     commands = (
+        # (Keep existing CREATE TABLE commands for balances, portfolios, etc.)
         """
         CREATE TABLE IF NOT EXISTS balances (
             discord_id VARCHAR(255) PRIMARY KEY,
-            inGameName VARCHAR(255) NOT NULL,
+            ingamename VARCHAR(255) NOT NULL,
             balance NUMERIC(15, 2) NOT NULL DEFAULT 10000.00
         );
         """,
         """
         CREATE TABLE IF NOT EXISTS stock_prices (
-            inGameName VARCHAR(255) PRIMARY KEY,
+            ingamename VARCHAR(255) PRIMARY KEY,
             current_price NUMERIC(10, 2) NOT NULL DEFAULT 10.00
         );
         """,
         """
+        ALTER TABLE stock_prices
+        ADD COLUMN IF NOT EXISTS ticker VARCHAR(5) UNIQUE,
+        ADD COLUMN IF NOT EXISTS init_factor NUMERIC(5, 2),
+        ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'active',
+        ADD COLUMN IF NOT EXISTS nudge_bonus NUMERIC(10, 4) DEFAULT 0.0;
+        """,
+        # (Keep existing CREATE TABLE commands for portfolios, etc.)
+        """
         CREATE TABLE IF NOT EXISTS portfolios (
             portfolio_id SERIAL PRIMARY KEY,
             investor_discord_id VARCHAR(255) NOT NULL,
-            stock_inGameName VARCHAR(255) NOT NULL,
+            stock_ingamename VARCHAR(255) NOT NULL,
             shares_owned NUMERIC(15, 6) NOT NULL,
             CONSTRAINT fk_investor
                 FOREIGN KEY(investor_discord_id) 
                 REFERENCES balances(discord_id),
             CONSTRAINT fk_stock
-                FOREIGN KEY(stock_inGameName) 
-                REFERENCES stock_prices(inGameName)
+                FOREIGN KEY(stock_ingamename) 
+                REFERENCES stock_prices(ingamename)
         );
         """,
         """
@@ -131,6 +140,24 @@ def create_market_tables():
             details JSONB,
             balance_after NUMERIC(15, 2)
         );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS stock_price_history (
+            history_id SERIAL PRIMARY KEY,
+            ingamename VARCHAR(255) NOT NULL,
+            price NUMERIC(10, 2) NOT NULL,
+            timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            CONSTRAINT fk_stock_history_stock
+                FOREIGN KEY(ingamename) 
+                REFERENCES stock_prices(ingamename)
+        );
+        """,
+        # --- NEW: Create the market_state table ---
+        """
+        CREATE TABLE IF NOT EXISTS market_state (
+            state_name VARCHAR(255) PRIMARY KEY,
+            state_value TEXT
+        );
         """
     )
     conn = None
@@ -142,19 +169,17 @@ def create_market_tables():
                 cur.execute(command)
             cur.close()
             conn.commit()
-            print("Market tables created or already exist.")
+            print("Market tables created or altered successfully.")
     except (Exception, psycopg2.DatabaseError) as error:
-        print(error)
+        print(f"Error during table creation: {error}")
     finally:
         if conn is not None:
             conn.close()
 
-### Marketplace (Fan Exchange) Functions ###
 def get_market_data_from_db():
     """
     Fetches all core market tables from the database and returns them as a
-    dictionary of pandas DataFrames, mimicking the old CSV loading logic.
-    Also fetches non-migrated CSV files for hybrid operation.
+    dictionary of pandas DataFrames.
     """
     conn = get_connection()
     if not conn:
@@ -162,32 +187,29 @@ def get_market_data_from_db():
         return None
     
     try:
-        with conn: # Using 'with' ensures the connection is closed
+        with conn:
             balances_df = pd.read_sql("SELECT * FROM balances", conn)
             stock_prices_df = pd.read_sql("SELECT * FROM stock_prices", conn)
             portfolios_df = pd.read_sql("SELECT * FROM portfolios", conn)
             shop_upgrades_df = pd.read_sql("SELECT * FROM shop_upgrades", conn)
+            market_state_df = pd.read_sql("SELECT * FROM market_state", conn)
             
-            # --- Rename columns to match expected DataFrame format ---
+            # Clean up potential NULL values from the database that pandas reads as NaN
+            market_state_df['state_value'] = market_state_df['state_value'].replace("NaN", "Test")
+
+            # Rename columns to match expected DataFrame format
             balances_df.rename(columns={'ingamename': 'inGameName'}, inplace=True)
             stock_prices_df.rename(columns={'ingamename': 'inGameName'}, inplace=True)
             portfolios_df.rename(columns={'stock_ingamename': 'stock_inGameName'}, inplace=True)
             
-            # For hybrid mode, we still load these from CSV
-            market_state_df = pd.read_csv('market/market_state.csv')
-            member_initialization_df = pd.read_csv('market/member_initialization.csv')
-            market_events_df = pd.read_csv('market/market_events.csv')
-
         logging.info("Successfully fetched all market data from the database.")
         
         return {
-            'crew_coins': balances_df, # Use the old key for compatibility
+            'crew_coins': balances_df,
             'stock_prices': stock_prices_df,
             'portfolios': portfolios_df,
             'shop_upgrades': shop_upgrades_df,
             'market_state': market_state_df,
-            'member_initialization': member_initialization_df,
-            'market_events': market_events_df
         }
         
     except (Exception, psycopg2.Error) as error:
@@ -197,11 +219,40 @@ def get_market_data_from_db():
         if conn is not None:
             conn.close()
 
+def save_market_state_to_db(market_state_df):
+    """Saves the market_state DataFrame to the database."""
+    conn = get_connection()
+    if not conn:
+        logging.error("Cannot save market state, no database connection.")
+        return False
+        
+    with conn.cursor() as cursor:
+        try:
+            state_tuples = [tuple(x) for x in market_state_df.to_numpy()]
+            extras.execute_values(
+                cursor,
+                """
+                INSERT INTO market_state (state_name, state_value) VALUES %s
+                ON CONFLICT (state_name) DO UPDATE SET state_value = EXCLUDED.state_value;
+                """,
+                state_tuples
+            )
+            conn.commit()
+            logging.info("Successfully saved market state to the database.")
+            return True
+        except (Exception, psycopg2.Error) as error:
+            logging.error(f"Error saving market state to DB: {error}")
+            conn.rollback()
+            return False
+        finally:
+            if conn is not None:
+                conn.close()
+
 def save_all_market_data_to_db(balances_df, stock_prices_df, new_transactions):
     """
     Saves all updated market data to the database in a single transaction.
     - Updates balances
-    - Updates stock prices
+    - Updates stock prices (including nudge_bonus)
     - Inserts new periodic earnings transactions
     """
     conn = get_connection()
@@ -212,9 +263,8 @@ def save_all_market_data_to_db(balances_df, stock_prices_df, new_transactions):
     with conn.cursor() as cursor:
         try:
             # 1. Update Balances
-            # Create a temporary table, insert the new data, then update the main table
             cursor.execute("CREATE TEMP TABLE temp_balances (discord_id VARCHAR(255) PRIMARY KEY, balance NUMERIC(15, 2));")
-            balances_tuples = [tuple(x) for x in balances_df[['discord_id', 'balance']].to_numpy()]
+            balances_tuples = list(balances_df[['discord_id', 'balance']].itertuples(index=False, name=None))
             extras.execute_values(cursor, "INSERT INTO temp_balances (discord_id, balance) VALUES %s", balances_tuples)
             cursor.execute("""
                 UPDATE balances
@@ -224,15 +274,16 @@ def save_all_market_data_to_db(balances_df, stock_prices_df, new_transactions):
             """)
             logging.info(f"Updated {len(balances_df)} rows in 'balances' table.")
 
-            # 2. Update Stock Prices
-            cursor.execute("CREATE TEMP TABLE temp_stock_prices (inGameName VARCHAR(255) PRIMARY KEY, current_price NUMERIC(10, 2));")
-            prices_tuples = [tuple(x) for x in stock_prices_df[['inGameName', 'current_price']].to_numpy()]
-            extras.execute_values(cursor, "INSERT INTO temp_stock_prices (inGameName, current_price) VALUES %s", prices_tuples)
+            # 2. Update Stock Prices (now includes nudge_bonus)
+            cursor.execute("CREATE TEMP TABLE temp_stock_prices (ingamename VARCHAR(255) PRIMARY KEY, current_price NUMERIC(10, 2), nudge_bonus NUMERIC(10, 4));")
+            prices_tuples = list(stock_prices_df[['inGameName', 'current_price', 'nudge_bonus']].itertuples(index=False, name=None))
+            extras.execute_values(cursor, "INSERT INTO temp_stock_prices (ingamename, current_price, nudge_bonus) VALUES %s", prices_tuples)
             cursor.execute("""
                 UPDATE stock_prices
-                SET current_price = temp_stock_prices.current_price
+                SET current_price = temp_stock_prices.current_price,
+                    nudge_bonus = temp_stock_prices.nudge_bonus
                 FROM temp_stock_prices
-                WHERE stock_prices.inGameName = temp_stock_prices.inGameName;
+                WHERE stock_prices.ingamename = temp_stock_prices.ingamename;
             """)
             logging.info(f"Updated {len(stock_prices_df)} rows in 'stock_prices' table.")
 
@@ -253,6 +304,36 @@ def save_all_market_data_to_db(balances_df, stock_prices_df, new_transactions):
 
         except (Exception, psycopg2.Error) as error:
             logging.error(f"Error saving market data to DB: {error}")
+            conn.rollback()
+            return False
+        finally:
+            if conn is not None:
+                conn.close()
+                
+# --- Function to log the price history ---
+def log_stock_price_history(stock_prices_df):
+    """Inserts the current stock prices into the history table."""
+    conn = get_connection()
+    if not conn:
+        logging.error("Cannot log price history, no database connection.")
+        return False
+    
+    with conn.cursor() as cursor:
+        try:
+            history_data = [
+                (row['inGameName'], row['current_price'])
+                for _, row in stock_prices_df.iterrows()
+            ]
+            extras.execute_values(
+                cursor,
+                "INSERT INTO stock_price_history (ingamename, price) VALUES %s",
+                history_data
+            )
+            conn.commit()
+            logging.info(f"Successfully logged {len(history_data)} price points to history table.")
+            return True
+        except (Exception, psycopg2.Error) as error:
+            logging.error(f"Error logging stock price history: {error}")
             conn.rollback()
             return False
         finally:
@@ -345,4 +426,5 @@ if __name__ == "__main__":
     """
     print("Attempting to initialize the database...")
     initialize_database()
+    create_market_tables()
     print("Initialization complete.")

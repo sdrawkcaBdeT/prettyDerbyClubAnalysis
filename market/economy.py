@@ -39,7 +39,7 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
     crew_coins_df = market_data_dfs['crew_coins'].copy()
     portfolios_df = market_data_dfs['portfolios']
     shop_upgrades_df = market_data_dfs['shop_upgrades']
-    market_state = market_data_dfs['market_state'].set_index('state_name')['value']
+    market_state = market_data_dfs['market_state'].set_index('state_name')['state_value']
 
     # --- Event Handling for Earnings ---
     active_event_name = str(market_state.get('active_event', 'None'))

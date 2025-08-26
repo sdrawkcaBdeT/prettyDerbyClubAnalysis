@@ -1,10 +1,14 @@
+# market/engine.py
 import pandas as pd
 import numpy as np
 import random
 from datetime import timedelta, datetime
 import pytz
 import os
-import ast # For safely evaluating the string representation of a list
+import ast 
+from market.database import log_stock_price_history
+
+# --- HELPER FUNCTIONS (Copied from your original file) ---
 
 def _ensure_aware_utc(dt_object):
     """
@@ -12,14 +16,10 @@ def _ensure_aware_utc(dt_object):
     If the object is naive, it's assumed to be in US/Central.
     """
     if dt_object.tzinfo is None:
-        # It's naive, so we must first make it aware.
         central_tz = pytz.timezone('US/Central')
         aware_dt = central_tz.localize(dt_object)
     else:
-        # It's already aware.
         aware_dt = dt_object
-    
-    # Now that we're certain it's aware, we can safely convert to UTC.
     return aware_dt.astimezone(pytz.utc)
 
 def get_prestige_floor(prestige, random_init_factor):
@@ -31,12 +31,9 @@ def get_prestige_floor(prestige, random_init_factor):
 def get_lagged_average(enriched_df, member_name, market_state, run_timestamp, override_hours=None):
     """
     Calculates the rolling average fan gain from a time-lagged window.
-    The lag is now determined by the persistent state in market_state.csv.
     """
     avg_hours = override_hours if override_hours is not None else 20
     
-    # --- NEW STATEFUL LAGGING LOGIC ---
-    # 1. Get the list of possible lag days and the current cursor
     lag_options_str = market_state.get('lag_options', "[0]")
     try:
         lag_options = ast.literal_eval(lag_options_str)
@@ -46,18 +43,12 @@ def get_lagged_average(enriched_df, member_name, market_state, run_timestamp, ov
         lag_options = [0]
         
     active_cursor = int(market_state.get('active_lag_cursor', 0))
-    
-    # Ensure cursor is within bounds
     if active_cursor >= len(lag_options):
         active_cursor = 0
         
-    # 2. Determine the active lag in days
     lag_days = lag_options[active_cursor]
-    
-    # 3. Define the end of the historical window based on the lag
     end_of_window = run_timestamp - timedelta(days=lag_days)
 
-    # 4. Filter the member's data to only include records *before* the end of our lagged window
     member_df = enriched_df[enriched_df['inGameName'] == member_name].copy()
     member_df['timestamp'] = pd.to_datetime(member_df['timestamp'])
     member_df = member_df.set_index('timestamp').sort_index()
@@ -67,22 +58,17 @@ def get_lagged_average(enriched_df, member_name, market_state, run_timestamp, ov
     if historical_data.empty:
         return 0
         
-    # 5. Calculate the rolling average on this historical, time-shifted data
     rolling_avg_series = historical_data['fanGain'].rolling(f'{avg_hours}h').mean()
     
-    return rolling_avg_series.iloc[-1] if pd.notna(rolling_avg_series.iloc[-1]) else 0
-
+    return rolling_avg_series.iloc[-1] if not rolling_avg_series.empty and pd.notna(rolling_avg_series.iloc[-1]) else 0
 
 def get_club_sentiment(enriched_df):
     """Calculates the club sentiment based on recent fan gain vs. 7-day average."""
     enriched_df['timestamp'] = pd.to_datetime(enriched_df['timestamp']).dt.tz_convert('US/Central')
     now = enriched_df['timestamp'].max()
 
-    last_24h = enriched_df[enriched_df['timestamp'] > now - timedelta(days=1)]
-    total_gain_24h = last_24h['fanGain'].sum()
-
-    last_7d = enriched_df[enriched_df['timestamp'] > now - timedelta(days=7)]
-    total_gain_7d = last_7d['fanGain'].sum()
+    total_gain_24h = enriched_df[enriched_df['timestamp'] > now - timedelta(days=1)]['fanGain'].sum()
+    total_gain_7d = enriched_df[enriched_df['timestamp'] > now - timedelta(days=7)]['fanGain'].sum()
     avg_gain_7d = total_gain_7d / 7
     
     if avg_gain_7d == 0:
@@ -100,46 +86,40 @@ def get_player_condition(enriched_df, member_name):
     std_dev = member_data['fanGain'].std()
     
     min_std, max_std = 0, 50000 
-    normalized_std = (std_dev - min_std) / (max_std - min_std)
-    normalized_std = np.clip(normalized_std, 0, 1)
+    normalized_std = np.clip((std_dev - min_std) / (max_std - min_std), 0, 1)
 
     min_mult, max_mult = 0.85, 1.40
-    multiplier = min_mult + (normalized_std * (max_mult - min_mult))
-    return multiplier
+    return min_mult + (normalized_std * (max_mult - min_mult))
+
+# --- REFACTORED FUNCTIONS ---
 
 def calculate_individual_nudges(market_data_dfs, run_timestamp):
     """
-    Ranks players by their fan gain over the last 24 hours and applies a
-    prorated, tiered nudge to their permanent nudge_bonus.
+    Calculates prorated nudges and returns the updated stock_prices DataFrame.
+    This function no longer reads from or writes to any CSV files.
     """
-    print("Calculating individual prestige nudges based on 24h fan gain...")
+    print("Calculating individual prestige nudges...")
     enriched_df = market_data_dfs['enriched_fan_log']
-    market_state = market_data_dfs['market_state']
-    
-        # --- 1. Determine Time Window (Final, Corrected Logic) ---
-    last_run_timestamp = None
     market_state_df = market_data_dfs['market_state']
-
-    # We prioritize the new 'last_run_timestamp' if it exists.
-    last_run_series = market_state_df.loc[market_state_df['state_name'] == 'last_run_timestamp', 'value']
+    # Work on a copy to avoid modifying the original DataFrame in the dictionary
+    stock_prices_df = market_data_dfs['stock_prices'].copy()
     
-    if not last_run_series.empty and pd.notna(last_run_series.iloc[0]):
-        # On all runs AFTER the first, this block will execute.
-        last_run_timestamp = pd.to_datetime(last_run_series.iloc[0]).tz_convert('UTC')
+    market_state = market_state_df.set_index('state_name')['state_value']
+    last_run_series = market_state.get('last_run_timestamp')
+    
+    if pd.notna(last_run_series):
+        last_run_timestamp = pd.to_datetime(last_run_series).tz_convert('UTC')
     else:
-        # On the VERY FIRST run, this block will execute.
-        # We use 'last_event_check_timestamp' as the starting point.
-        event_check_series = market_state_df.loc[market_state_df['state_name'] == 'last_event_check_timestamp', 'value']
-        if not event_check_series.empty and pd.notna(event_check_series.iloc[0]):
-            last_run_timestamp = pd.to_datetime(event_check_series.iloc[0]).tz_convert('UTC')
+        event_check_series = market_state.get('last_event_check_timestamp')
+        if pd.notna(event_check_series):
+            last_run_timestamp = pd.to_datetime(event_check_series).tz_convert('UTC')
         else:
-            # This is a final safety net in case the file is malformed.
             print("CRITICAL: Cannot find a valid start timestamp. Nudge calculation aborted.")
-            return
+            return stock_prices_df
+
     current_timestamp_utc = _ensure_aware_utc(run_timestamp)
     one_day_ago = current_timestamp_utc - timedelta(days=1)
     
-    # --- 2. Calculate Fan Gains in the Last 24 Hours ---
     perf_window_df = enriched_df[
         (enriched_df['timestamp'] > one_day_ago) &
         (enriched_df['timestamp'] <= current_timestamp_utc)
@@ -147,11 +127,9 @@ def calculate_individual_nudges(market_data_dfs, run_timestamp):
 
     if perf_window_df.empty:
         print("No fan gain data in the last 24 hours. Skipping nudges.")
-        return
+        return stock_prices_df
 
     daily_fan_gains = perf_window_df.groupby('inGameName')['fanGain'].sum().reset_index()
-    
-    # --- 3. Rank Players and Assign Tiered Nudge ---
     daily_fan_gains['rank'] = daily_fan_gains['fanGain'].rank(method='first', ascending=False)
     
     def assign_nudge(rank):
@@ -165,119 +143,83 @@ def calculate_individual_nudges(market_data_dfs, run_timestamp):
         if 22 <= rank <= 24: return -0.3
         if 25 <= rank <= 27: return -0.4
         return -0.5
-
     daily_fan_gains['base_nudge'] = daily_fan_gains['rank'].apply(assign_nudge)
 
-    # --- 4. Calculate Prorated Nudge and Apply ---
     time_passed_hrs = (current_timestamp_utc - last_run_timestamp).total_seconds() / 3600
-    if time_passed_hrs == 0: return
+    if time_passed_hrs <= 0: return stock_prices_df
     
     proration_factor = time_passed_hrs / 24.0
     daily_fan_gains['prorated_nudge'] = daily_fan_gains['base_nudge'] * proration_factor
 
-    nudge_file = 'market/prestige_nudges.csv'
-    if os.path.exists(nudge_file):
-        nudges_df = pd.read_csv(nudge_file)
-    else:
-        nudges_df = pd.DataFrame(columns=['inGameName', 'nudge_bonus'])
-        
-    all_members_df = enriched_df[['inGameName']].drop_duplicates()
-    nudges_df = pd.merge(all_members_df, nudges_df, on='inGameName', how='left').fillna(0)
+    # Merge nudges into the stock_prices_df and update the nudge_bonus
+    merged_df = pd.merge(stock_prices_df, daily_fan_gains[['inGameName', 'prorated_nudge']], on='inGameName', how='left')
+    merged_df['prorated_nudge'] = merged_df['prorated_nudge'].fillna(0)
+    merged_df['nudge_bonus'] = merged_df['nudge_bonus'] + merged_df['prorated_nudge']
     
-    final_nudges = pd.merge(nudges_df, daily_fan_gains[['inGameName', 'prorated_nudge']], on='inGameName', how='left').fillna(0)
-    final_nudges['nudge_bonus'] += final_nudges['prorated_nudge']
+    print("Prestige nudges calculated and applied.")
+    return merged_df.drop(columns=['prorated_nudge'])
 
-    # --- 5. Save the results ---
-    final_nudges[['inGameName', 'nudge_bonus']].to_csv(nudge_file, index=False)
-    print("Prestige nudges calculated and saved.")
 
 def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
     """
-    The main pricing engine. Calculates new prices and writes them to a history log.
+    The main pricing engine. Calculates new prices using data from the database.
     """
-    init_df = market_data_dfs['member_initialization']
+    # --- 1. SETUP ---
     stock_prices_df = market_data_dfs['stock_prices'].copy()
     market_state_df = market_data_dfs['market_state']
-    market_state = market_state_df.set_index('state_name')['value']
+    market_state = market_state_df.set_index('state_name')['state_value']
     portfolios_df = market_data_dfs['portfolios']
-    
-    # --- Load the nudge data ---
-    nudge_file = 'market/prestige_nudges.csv'
-    if os.path.exists(nudge_file):
-        nudges_df = pd.read_csv(nudge_file)
-    else:
-        nudges_df = pd.DataFrame(columns=['inGameName', 'nudge_bonus'])
     
     active_event_name = str(market_state.get('active_event', 'None'))
     
-    event_modifiers = {'price': {}, 'condition': {}, 'lag': {}}
-    sentiment_modifier = 1.0
+    init_factor_map = stock_prices_df.set_index('inGameName')['init_factor'].to_dict()
+    nudge_bonus_map = stock_prices_df.set_index('inGameName')['nudge_bonus'].to_dict()
     
-    member_names = list(enriched_df['inGameName'].unique())
-
     if active_event_name not in ['None', 'nan']:
         print(f"EVENT ACTIVE: Applying '{active_event_name}' modifiers.")
-        events_df = market_data_dfs['market_events']
-        
-        event_details_row = events_df[events_df['event_name'] == active_event_name]
-        if not event_details_row.empty:
-            # Event logic remains the same
-            pass
-
-    club_sentiment = get_club_sentiment(enriched_df) * sentiment_modifier
+    
+    club_sentiment = get_club_sentiment(enriched_df)
     market_state['club_sentiment'] = club_sentiment
 
     updated_prices = []
-    price_history_records = []
-
-    for name in member_names:
-        member_latest_data = enriched_df[enriched_df['inGameName'] == name].iloc[-1]
+    
+    # --- 2. CALCULATION LOOP (Your original logic, corrected sources) ---
+    for _, member_latest_data in enriched_df.groupby('inGameName').tail(1).iterrows():
+        name = member_latest_data['inGameName']
         
+        # --- CORRECT: Get static data from our maps, not a separate CSV ---
+        random_factor = init_factor_map.get(name)
+        nudge_bonus = nudge_bonus_map.get(name, 0)
+        
+        if random_factor is None: continue # Skip if member not in stock table
+
         total_shares_outstanding = portfolios_df[portfolios_df['stock_inGameName'] == name]['shares_owned'].sum()
         price_impact_multiplier = (1 + (total_shares_outstanding * 0.00002)) ** 1.2
         
         prestige = member_latest_data['lifetimePrestige']
-        random_factor_row = init_df[init_df['inGameName'] == name]
-        if random_factor_row.empty: continue
-        random_factor = random_factor_row['random_init_factor'].iloc[0]
-        
-        lag_override = event_modifiers['lag'].get(name)
-        
         prestige_floor = get_prestige_floor(prestige, random_factor)
+        nudged_floor = prestige_floor + nudge_bonus        
         
-        # --- Apply the individual nudge bonus ---
-        member_nudge = nudges_df[nudges_df['inGameName'] == name]
-        nudge_bonus = member_nudge['nudge_bonus'].iloc[0] if not member_nudge.empty else 0
-        nudged_floor = prestige_floor + nudge_bonus
-        
-        lagged_avg_gain = get_lagged_average(enriched_df, name, market_state, run_timestamp, override_hours=lag_override)
+        lagged_avg_gain = get_lagged_average(enriched_df, name, market_state, run_timestamp)
         stochastic_jitter = np.random.normal(1.0, 0.08)
         
         performance_value = (lagged_avg_gain / 8757) * club_sentiment * stochastic_jitter
         core_value = nudged_floor + performance_value
         
-        player_condition = event_modifiers['condition'].get(name, get_player_condition(enriched_df, name))
-        price_modifier = event_modifiers['price'].get(name, 1.0)
+        player_condition = get_player_condition(enriched_df, name)
         
-        final_price = (core_value * player_condition) * price_modifier * price_impact_multiplier
-        
-        final_price = (core_value * player_condition) * price_modifier
+        final_price = core_value * player_condition * price_impact_multiplier
         final_price = max(final_price, 0.01)
         
         updated_prices.append({'inGameName': name, 'current_price': final_price})
-        
-        timestamp_str = run_timestamp.strftime('%Y-%m-%d %H:%M:%S%z')
-        formatted_timestamp = f"{timestamp_str[:-2]}:{timestamp_str[-2:]}"
-        
-        price_history_records.append({'timestamp': formatted_timestamp, 'in_game_name': name, 'price': final_price})        
 
-    new_prices_df = pd.DataFrame(updated_prices).set_index('inGameName')
-    stock_prices_df = stock_prices_df.set_index('inGameName')
-    stock_prices_df['current_price'] = new_prices_df['current_price']
-    stock_prices_df['24hr_change'] = 0.0
+    # --- 3. PREPARE & LOG ---
+    new_prices_df = pd.DataFrame(updated_prices)
     
-    history_df = pd.DataFrame(price_history_records)
-    history_df.to_csv('market/stock_price_history.csv', mode='a', header=not os.path.exists('market/stock_price_history.csv'), index=False)
+    final_stocks_df = pd.merge(stock_prices_df.drop(columns=['current_price']), new_prices_df, on='inGameName', how='left')
+    final_stocks_df['current_price'] = final_stocks_df['current_price'].fillna(0.01)
     
-    print("Baggins Index: Prices updated and history logged.")
-    return stock_prices_df.reset_index(), market_state.to_frame(name='value').reset_index()
+    print("Baggins Index: Prices updated, logging to database history.")
+    log_stock_price_history(final_stocks_df)
+    
+    return final_stocks_df, market_state.to_frame(name='state_value').reset_index()

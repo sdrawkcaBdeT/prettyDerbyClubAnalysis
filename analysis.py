@@ -13,7 +13,7 @@ import ast # Required for parsing the lag options
 from market.economy import process_cc_earnings
 from market.engine import update_all_stock_prices, calculate_individual_nudges
 from market.events import clear_and_check_events, update_lag_index
-from market.database import get_market_data_from_db, save_all_market_data_to_db
+from market.database import get_market_data_from_db, save_all_market_data_to_db, save_market_state_to_db
 
 # --- Configuration ---
 MEMBERS_CSV = 'members.csv'
@@ -173,54 +173,49 @@ def main():
     
     run_timestamp = generation_ct 
 
-    # --- REFACTOR: Load data from the database ---
-    initial_market_data = get_market_data_from_db()
-    if not initial_market_data:
-        print("FATAL: Could not load market data from database. Halting Fan Exchange processing.")
+    # --- 1. READ: Load the state of the market AS IT IS RIGHT NOW ---
+    market_data = get_market_data_from_db()
+    if not market_data:
+        print("FATAL: Could not load market data from database. Halting.")
         return
     
-    market_state_series = initial_market_data['market_state'].set_index('state_name')['value']
-    log_market_snapshot(run_timestamp, market_state_series)
+    # Log a snapshot of the state we are using for this run's calculations
+    log_market_snapshot(run_timestamp, market_data['market_state'].set_index('state_name')['state_value'])
  
-    print("Running CC Earnings Engine...")
-    # --- REFACTOR: process_cc_earnings now returns transactions to be logged ---
-    updated_balances_df, new_transactions = process_cc_earnings(fanlog_df, initial_market_data, run_timestamp)
-    
+    # --- 2. CALCULATE: Perform all calculations using the state we just loaded ---
     print("\nCalculating Individual Performance Nudges...")
-    # We use the updated balances for nudge calculations
-    all_market_dfs = {**initial_market_data, 'crew_coins': updated_balances_df, 'enriched_fan_log': fanlog_df}
-    calculate_individual_nudges(all_market_dfs, run_timestamp)
+    market_data['enriched_fan_log'] = fanlog_df # Add fanlog for this run
+    updated_stock_prices_df = calculate_individual_nudges(market_data, run_timestamp)
+    market_data['stock_prices'] = updated_stock_prices_df # Update for next step
 
+    print("\nRunning CC Earnings Engine...")
+    updated_balances_df, new_transactions = process_cc_earnings(fanlog_df, market_data, run_timestamp)
+    
     print("\nRunning Baggins Index Price Engine...")
-    all_market_dfs = {**initial_market_data, 'crew_coins': updated_balances_df}
-    updated_stocks_df, updated_market_state_df = update_all_stock_prices(fanlog_df, all_market_dfs, run_timestamp)
+    final_stock_prices_df, updated_market_state_df_from_engine = update_all_stock_prices(fanlog_df, market_data, run_timestamp)
     
-    # --- REFACTOR: Save all data back to the database in one transaction ---
-    print("\nSaving all market data to the database...")
-    save_all_market_data_to_db(updated_balances_df, updated_stocks_df, new_transactions)
+    # --- 3. UPDATE STATE: After all calculations, determine the state for the NEXT run ---
+    print("\n--- Checking for Market Lag Shifts for the next cycle ---")
+    current_market_state_df = updated_market_state_df_from_engine
     
-    # We still save the non-migrated market_state CSV
-    updated_market_state_df.to_csv('market/market_state.csv', index=False)
-    
-    if 'last_run_timestamp' in updated_market_state_df['state_name'].values:
-        updated_market_state_df.loc[updated_market_state_df['state_name'] == 'last_run_timestamp', 'value'] = run_timestamp
-    else:
-        new_row = pd.DataFrame([{'state_name': 'last_run_timestamp', 'value': run_timestamp}])
-        updated_market_state_df = pd.concat([updated_market_state_df, new_row], ignore_index=True)
+    # The event check is now disabled, so we just call the lag update
+    final_next_market_state_df, lag_announcement = update_lag_index(current_market_state_df, run_timestamp)
+    # The event announcement will always be None now
+    _, event_announcement = clear_and_check_events(final_next_market_state_df, run_timestamp)
 
-    print("\n--- Checking for Market Events ---")
-    lag_announcement = update_lag_index(run_timestamp)
+    # --- 4. SAVE: Commit all results to the database ---
+    print("\nSaving all market data and the new state to the database...")
+    
+    save_all_market_data_to_db(updated_balances_df, final_stock_prices_df, new_transactions)
+    
+    final_next_market_state_df.loc[final_next_market_state_df['state_name'] == 'last_run_timestamp', 'state_value'] = run_timestamp.isoformat()
+    save_market_state_to_db(final_next_market_state_df)
+    
+    # --- 5. QUEUE ANNOUNCEMENTS ---
     if lag_announcement:
         print(f"Queueing announcement: {lag_announcement}")
         with open("announcements.txt", "a") as f:
             f.write(lag_announcement + "\n")
-
-    event_announcement = clear_and_check_events(run_timestamp)
-    if event_announcement:
-        full_event_message = f"🎉 **Market Event!** {event_announcement}"
-        print(f"Queueing announcement: {full_event_message}")
-        with open("announcements.txt", "a") as f:
-            f.write(full_event_message + "\n")
     
 if __name__ == "__main__":
     main()
