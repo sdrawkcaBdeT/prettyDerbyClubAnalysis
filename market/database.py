@@ -774,6 +774,100 @@ def execute_purchase_transaction(actor_id: str, item_name: str, cost: float, upg
             conn.rollback()
             return None
     conn.close()
+    
+def get_financial_summary(discord_id: str) -> dict:
+    """
+    Calculates a user's complete financial summary using a single, efficient query.
+    This function uses Common Table Expressions (CTEs) to avoid multiple database
+    round-trips, ensuring optimal performance.
+
+    Returns:
+        A dictionary containing the calculated KPIs, or a default dictionary
+        of zeros if the user has no financial data.
+    """
+    conn = get_connection()
+    if not conn:
+        return {
+            'net_worth': 0,
+            'total_portfolio_value': 0,
+            'p_l': 0,
+            'roi_percent': 0
+        }
+
+    # This query is designed for high efficiency.
+    # - CTEs break down the complex calculation into logical, readable steps.
+    # - It fetches all necessary data in one go, preventing multiple network latencies.
+    # - COALESCE is used extensively to handle cases where a user might have a balance
+    #   but no stocks, or vice-versa, preventing NULL-related errors in calculations.
+    query = """
+    WITH PortfolioValue AS (
+        -- First, calculate the current total value of the user's stock holdings.
+        SELECT
+            p.investor_discord_id,
+            COALESCE(SUM(p.shares_owned * s.current_price), 0) AS total_stock_value
+        FROM portfolios p
+        JOIN stock_prices s ON p.stock_ingamename = s.ingamename
+        WHERE p.investor_discord_id = %(user_id)s
+        GROUP BY p.investor_discord_id
+    ),
+    TradeHistory AS (
+        -- Next, aggregate the user's buy and sell history from the transactions table.
+        SELECT
+            actor_id,
+            -- Sum of negative cc_amount for 'INVEST' transactions represents total cost.
+            -- We use ABS() to get a positive value for total invested.
+            COALESCE(SUM(CASE WHEN transaction_type = 'INVEST' THEN ABS(cc_amount) - fee_paid ELSE 0 END), 0) AS total_invested,
+            -- Sum of positive cc_amount for 'SELL' transactions represents total returns from sales.
+            COALESCE(SUM(CASE WHEN transaction_type = 'SELL' THEN cc_amount - fee_paid ELSE 0 END), 0) AS total_returns_from_sales
+        FROM transactions
+        WHERE actor_id = %(user_id)s AND transaction_type IN ('INVEST', 'SELL')
+        GROUP BY actor_id
+    )
+    -- Finally, join everything together to calculate the final KPIs.
+    SELECT
+        b.balance AS cc_balance,
+        COALESCE(pv.total_stock_value, 0) AS total_portfolio_value,
+        (b.balance + COALESCE(pv.total_stock_value, 0)) AS net_worth,
+        COALESCE(th.total_invested, 0) AS total_invested,
+        -- Profit/Loss = (Current Value + What I've Sold) - What I've Bought
+        (COALESCE(pv.total_stock_value, 0) + COALESCE(th.total_returns_from_sales, 0) - COALESCE(th.total_invested, 0)) AS p_l
+    FROM balances b
+    LEFT JOIN PortfolioValue pv ON b.discord_id = pv.investor_discord_id
+    LEFT JOIN TradeHistory th ON b.discord_id = th.actor_id
+    WHERE b.discord_id = %(user_id)s;
+    """
+    summary = {
+        'net_worth': 0,
+        'total_portfolio_value': 0,
+        'p_l': 0,
+        'roi_percent': 0
+    }
+    
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+            cursor.execute(query, {'user_id': discord_id})
+            result = cursor.fetchone()
+            if result:
+                # The result object is a DictRow, which can be accessed by key.
+                # We calculate ROI here in Python to avoid a division-by-zero error in SQL
+                # if the user has never invested.
+                total_invested = result['total_invested']
+                p_l = result['p_l']
+                
+                roi_percent = (p_l / total_invested) * 100 if total_invested > 0 else 0
+
+                summary['net_worth'] = float(result['net_worth'])
+                summary['total_portfolio_value'] = float(result['total_portfolio_value'])
+                summary['p_l'] = float(p_l)
+                summary['roi_percent'] = roi_percent
+
+    except (Exception, psycopg2.Error) as error:
+        logging.error(f"Error fetching financial summary for {discord_id}: {error}")
+    finally:
+        if conn is not None:
+            conn.close()
+            
+    return summary
 
 
 ### Racing Gambling Game Functions ###
