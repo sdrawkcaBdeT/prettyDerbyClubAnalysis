@@ -1942,8 +1942,8 @@ async def derby_leaderboard(ctx):
         embed = discord.Embed(title="🏆 Grand Derby Live Leaderboard 🏆", color=discord.Color.gold())
         
         leaderboard_text = "```\n"
-        leaderboard_text += "{:<16} | {:<12} | {:<10} | {:<12} | {}\n".format("Name", "CC Gained", "Fans Gained", "Perf. Yield", "Stock Profit")
-        leaderboard_text += "-" * 75 + "\n"
+        leaderboard_text += "{:<16} | {:<10} | {:<8} | {:<8} | {}\n".format("Name", "CC Gained", "Fans Gained", "Perf. Yield", "Stock Profit")
+        leaderboard_text += "-" * 56 + "\n"
 
         for i, row in page_data.iterrows():
             name = row['ingamename'][:15]
@@ -1969,18 +1969,20 @@ async def derby_leaderboard(ctx):
 @commands.check(is_admin)
 async def event(ctx):
     """Parent command for manually controlling market events."""
-    await ctx.send("Invalid event command. Use `/event start [hours]` or `/event stop`.", ephemeral=True)
+    await ctx.send("Invalid event command. Use `/event start [hours]` or `/event stop`.")
 
 @event.command(name="start")
 @commands.check(is_admin)
 async def event_start(ctx, hours: int):
     """(Admin Only) Manually starts the Grand Derby for a set number of hours."""
     if hours <= 0:
-        await ctx.send("Duration must be a positive number of hours.", ephemeral=True)
+        await ctx.send("Duration must be a positive number of hours.")
         return
 
-    # Use defer to let Discord know we're working on it.
-    await ctx.defer(ephemeral=True, thinking=True)
+    # --- THIS IS THE FIX ---
+    # Send a simple, initial message to acknowledge the command is running.
+    # We remove defer() and thinking=True.
+    await ctx.send(f"Processing `/event start {hours}`...")
 
     # Calculate the event's end time based on the current time and duration
     run_timestamp = datetime.now(pytz.timezone('US/Central'))
@@ -1993,8 +1995,7 @@ async def event_start(ctx, hours: int):
     # --- Take Snapshot FIRST ---
     snapshot_success = database.create_event_snapshot()
     if not snapshot_success:
-        # Let the admin know the snapshot failed before stopping.
-        await ctx.followup.send("`ERROR: Failed to create the event leaderboard snapshot. The contest cannot be tracked. Aborting event start.`", ephemeral=True)
+        await ctx.send("`ERROR: Failed to create the event leaderboard snapshot. The contest cannot be tracked. Aborting event start.`")
         return
         
     # --- Set Event State in Database ---
@@ -2002,11 +2003,9 @@ async def event_start(ctx, hours: int):
     success = database.update_market_state_value('event_end_timestamp', formatted_end_time)
 
     if success:
-        # Create a user-friendly Discord timestamp for the announcement
-        discord_timestamp = f"<t:{int(end_time.timestamp())}:R>" # Using :R for a relative countdown
+        discord_timestamp = f"<t:{int(end_time.timestamp())}:R>"
 
         # --- THIS IS THE PUBLIC ANNOUNCEMENT ---
-        # We find the fan-exchange channel to post the message publicly.
         fan_exchange_channel = discord.utils.get(ctx.guild.channels, name=FAN_EXCHANGE_CHANNEL_NAME)
         
         announcement_text = (
@@ -2019,25 +2018,24 @@ async def event_start(ctx, hours: int):
 
         if fan_exchange_channel:
             await fan_exchange_channel.send(announcement_text)
-            # Send a quiet confirmation back to the admin.
-            await ctx.followup.send(f"✅ Successfully started the Grand Derby in {fan_exchange_channel.mention}.", ephemeral=True)
+            await ctx.send(f"✅ Successfully started the Grand Derby in {fan_exchange_channel.mention}.")
         else:
-            await ctx.followup.send(f"Could not find the `#{FAN_EXCHANGE_CHANNEL_NAME}` channel to post the announcement.", ephemeral=True)
+            await ctx.send(f"Could not find the `#{FAN_EXCHANGE_CHANNEL_NAME}` channel to post the announcement.")
     else:
-        await ctx.followup.send("Failed to start the event. Could not update the market state.", ephemeral=True)
+        # Use ctx.send instead of ctx.followup.send
+        await ctx.send("Failed to start the event. Could not update the market state.")
 
 @event.command(name="stop")
 @commands.check(is_admin)
 async def event_stop(ctx):
     """(Admin Only) Stops the Grand Derby immediately."""
-    # To stop the event, we simply clear its name and end timestamp
     database.update_market_state_value('active_event', 'None')
     success = database.update_market_state_value('event_end_timestamp', 'None')
 
     if success:
-        await ctx.send("Successfully stopped the active event. The market will return to normal on the next analysis cycle.", ephemeral=True)
+        await ctx.send("Successfully stopped the active event. The market will return to normal on the next analysis cycle.")
     else:
-        await ctx.send("Failed to stop the event in the database.", ephemeral=True)
+        await ctx.send("Failed to stop the event in the database.")
 
 @event.error
 @event_start.error
@@ -2045,10 +2043,10 @@ async def event_stop(ctx):
 async def event_command_error(ctx, error):
     """Handles errors for the event command group, specifically for non-admins."""
     if isinstance(error, commands.CheckFailure):
-        await ctx.send("You do not have permission to use this command.", ephemeral=True)
+        await ctx.send("You do not have permission to use this command.")
     else:
-        await ctx.send(f"An unexpected error occurred: {error}", ephemeral=True)
-
+        # Send the actual error message to the channel to help debug.
+        await ctx.send(f"An unexpected error occurred: {error}")
 # ---------------------------------------------
 
 

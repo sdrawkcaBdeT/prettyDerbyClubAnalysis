@@ -779,6 +779,36 @@ def get_sponsorships(discord_id: str):
     # Convert the DataFrame to a list of dictionaries for easy use in the bot
     return df.to_dict('records')
 
+def update_market_state_value(state_name: str, state_value: str):
+    """
+    Updates a single key-value pair in the market_state table.
+    This is more efficient than reading and writing the entire table.
+    """
+    conn = get_connection()
+    if not conn:
+        logging.error(f"Cannot update market state for {state_name}, no database connection.")
+        return False
+    
+    with conn.cursor() as cursor:
+        try:
+            cursor.execute(
+                """
+                INSERT INTO market_state (state_name, state_value) VALUES (%s, %s)
+                ON CONFLICT (state_name) DO UPDATE SET state_value = EXCLUDED.state_value;
+                """,
+                (state_name, state_value)
+            )
+            conn.commit()
+            logging.info(f"Successfully updated market state: {state_name} = {state_value}")
+            return True
+        except (Exception, psycopg2.Error) as error:
+            logging.error(f"Error updating single market state value: {error}")
+            conn.rollback()
+            return False
+        finally:
+            if conn is not None:
+                conn.close()
+
 def update_user_ticker(ingamename: str, ticker: str):
     """
     Sets or updates a user's stock ticker.
