@@ -1,7 +1,7 @@
-state_name,value
-lag_options,"[3, 4, 5]"
+state_name,state_value
+lag_options,"[3,1,2]"
 active_event,
 event_end_time,
-club_sentiment,0.778334217092352
-last_event_check_timestamp,2025-08-25 17:55:50-05:00
-last_lag_check_timestamp,2025-08-25 17:55:50-05:00
+club_sentiment,0.9224528037769953
+last_event_check_timestamp,2025-08-25 23:53:44-05:00
+last_lag_check_timestamp,2025-08-25 23:53:44-05:00

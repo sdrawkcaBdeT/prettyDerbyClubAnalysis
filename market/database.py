@@ -6,6 +6,7 @@ import os
 from dotenv import load_dotenv
 import json
 import pandas as pd
+from datetime import datetime
 
 # Load credentials from .env file for security
 load_dotenv()
@@ -326,7 +327,17 @@ def save_all_market_data_to_db(balances_df, stock_prices_df, new_transactions):
         finally:
             if conn is not None:
                 conn.close()
-                
+
+def get_discord_id_by_name(ingamename: str) -> str:
+    """Fetches a user's discord_id by their in-game name."""
+    conn = get_connection()
+    if not conn: return None
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT discord_id FROM balances WHERE ingamename = %s;", (ingamename,))
+        result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
+
 # --- Function to log the price history ---
 def log_stock_price_history(stock_prices_df, run_timestamp):
     """Inserts the current stock prices into the history table with a specific timestamp."""
@@ -358,7 +369,87 @@ def log_stock_price_history(stock_prices_df, run_timestamp):
             if conn is not None:
                 conn.close()
 
+# market/database.py
+
+# (Add this function at the end of the file, after all other functions)
+
+def execute_backfill(final_balances_df, historical_transactions):
+    """
+    Executes the data backfill as a single, atomic transaction.
+    This is a special function just for the backfill script. It updates
+    final balances and inserts all historical earnings records.
+    """
+    conn = get_connection()
+    if not conn:
+        logging.error("BACKFILL FAILED: Cannot connect to the database.")
+        return False
+        
+    with conn.cursor() as cursor:
+        try:
+            # 1. Update Balances to their final, correct state using a temp table
+            cursor.execute("CREATE TEMP TABLE temp_balances (discord_id VARCHAR(255) PRIMARY KEY, balance NUMERIC(15, 2));")
+            balances_tuples = list(final_balances_df[['discord_id', 'balance']].itertuples(index=False, name=None))
+            extras.execute_values(cursor, "INSERT INTO temp_balances (discord_id, balance) VALUES %s", balances_tuples)
+            cursor.execute("""
+                UPDATE balances
+                SET balance = temp_balances.balance
+                FROM temp_balances
+                WHERE balances.discord_id = temp_balances.discord_id;
+            """)
+            logging.info(f"BACKFILL: Updated {len(balances_tuples)} user balances.")
+
+            # 2. Insert all the historical, missed transaction records
+            if historical_transactions:
+                # The backfill script provides a list of dictionaries, which we convert to tuples
+                transaction_tuples = [
+                    (
+                        record['timestamp'], record['actor_id'], record['target_id'],
+                        record['transaction_type'], record['item_name'], record['item_quantity'],
+                        record['cc_amount'], record['fee_paid'], record['details'], record['balance_after']
+                    )
+                    for record in historical_transactions
+                ]
+                
+                extras.execute_values(
+                    cursor,
+                    """INSERT INTO transactions 
+                       (timestamp, actor_id, target_id, transaction_type, item_name, item_quantity, cc_amount, fee_paid, details, balance_after) 
+                       VALUES %s""",
+                    transaction_tuples
+                )
+                logging.info(f"BACKFILL: Inserted {len(historical_transactions)} historical transactions.")
+
+            # If both operations succeed, commit the changes.
+            conn.commit()
+            logging.info("BACKFILL: Successfully saved all historical data to the database.")
+            return True
+
+        except (Exception, psycopg2.Error) as error:
+            # If anything fails, roll back all changes.
+            logging.error(f"BACKFILL FAILED: Error saving data to DB: {error}")
+            conn.rollback()
+            return False
+        finally:
+            if conn is not None:
+                conn.close()
+
 ### BOT SPECIFIC DATA ACCESS FUNCTIONS ###
+def get_user_details(discord_id: str) -> psycopg2.extras.DictRow:
+    """
+    Fetches a user's core details (balance, in-game name) from the balances table.
+    This provides a single, consistent source for verifying if a user has an account.
+
+    Returns:
+        A DictRow object containing user details, or None if the user is not found.
+    """
+    conn = get_connection()
+    if not conn: return None
+    with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+        cursor.execute("SELECT ingamename, balance FROM balances WHERE discord_id = %s;", (discord_id,))
+        result = cursor.fetchone()
+    conn.close()
+    return result
+
 def get_user_balance_by_discord_id(discord_id: str):
     """Fetches a single user's balance from the database."""
     conn = get_connection()
@@ -496,31 +587,77 @@ def get_market_snapshot():
     return market_df, volume_24h or 0
 
 
-def get_stock_details(ingamename: str):
-    """Fetches detailed info for one stock, including history and top 5 holders."""
+def get_stock_details(identifier: str):
+    """
+    Fetches all detailed information for a single stock in one efficient query.
+    This includes current price, 30-day price history, and top 5 holders.
+    """
     conn = get_connection()
-    if not conn: return None, pd.DataFrame(), pd.DataFrame()
+    if not conn:
+        return None, pd.DataFrame(), pd.DataFrame()
 
-    # Query 1: Stock Info
-    stock_info = get_stock_by_ticker_or_name(ingamename) # Re-use existing function
-    
-    # Query 2: Price History
-    history_df = get_stock_price_history(ingamename, days=30) # Re-use existing function
-
-    # Query 3: Top 5 Holders
-    holders_query = """
+    query = """
+    WITH SelectedStock AS (
+        SELECT * FROM stock_prices
+        WHERE ticker ILIKE %(identifier)s OR ingamename ILIKE %(identifier)s
+        LIMIT 1
+    ),
+    PriceHistory AS (
+        -- --- THIS IS THE FIX ---
+        -- The to_char function formats the timestamp into a standard ISO 8601 string.
+        -- This removes the microsecond ambiguity and ensures pandas can parse it reliably.
+        SELECT to_char(timestamp, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as timestamp, price
+        FROM stock_price_history
+        WHERE ingamename = (SELECT ingamename FROM SelectedStock)
+          AND timestamp >= NOW() - INTERVAL '30 days'
+        ORDER BY timestamp ASC
+    ),
+    TopHolders AS (
         SELECT
             b.ingamename,
             p.shares_owned
         FROM portfolios p
         JOIN balances b ON p.investor_discord_id = b.discord_id
-        WHERE p.stock_ingamename = %s
+        WHERE p.stock_ingamename = (SELECT ingamename FROM SelectedStock)
         ORDER BY p.shares_owned DESC
-        LIMIT 5;
+        LIMIT 5
+    )
+    SELECT
+        (SELECT row_to_json(ss) FROM SelectedStock ss) as stock_info,
+        (SELECT json_agg(ph) FROM PriceHistory ph) as history,
+        (SELECT json_agg(th) FROM TopHolders th) as top_holders;
     """
-    top_holders_df = pd.read_sql(holders_query, conn, params=(ingamename,))
     
-    conn.close()
+    stock_info = None
+    history_df = pd.DataFrame()
+    top_holders_df = pd.DataFrame()
+
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+            cursor.execute(query, {'identifier': identifier})
+            result = cursor.fetchone()
+            
+            if result and result['stock_info']:
+                stock_info = dict(result['stock_info'])
+                
+                if result['history']:
+                    history_df = pd.DataFrame(result['history'])
+                    
+                    # --- THIS IS THE FIX ---
+                    # We ensure the conversion is applied directly and correctly.
+                    # The `utc=True` argument makes the resulting datetime objects
+                    # timezone-aware, which is what's needed for the comparison.
+                    history_df['timestamp'] = pd.to_datetime(history_df['timestamp'], utc=True)
+
+                if result['top_holders']:
+                    top_holders_df = pd.DataFrame(result['top_holders'])
+
+    except (Exception, psycopg2.Error) as error:
+        logging.error(f"Error fetching stock details for {identifier}: {error}")
+    finally:
+        if conn is not None:
+            conn.close()
+            
     return stock_info, history_df, top_holders_df
 
 def get_user_portfolio(discord_id: str):
@@ -637,31 +774,37 @@ def update_user_ticker(ingamename: str, ticker: str):
     return success
 
 
-def execute_trade_transaction(actor_id: str, stock_name: str, shares: float, total_cost: float, fee: float, transaction_type: str):
+def execute_trade_transaction(
+    actor_id: str,
+    target_id: str, # New parameter
+    stock_name: str,
+    shares: float,
+    price_per_share: float, # New parameter
+    total_cost: float,
+    fee: float,
+    transaction_type: str
+):
     """
     Executes a buy or sell order as a single, atomic transaction.
-    Handles balance updates, portfolio changes, and transaction logging.
-    - For a BUY: cost is negative (money leaving wallet)
-    - For a SELL: cost is positive (money entering wallet)
-    Returns the new balance on success, None on failure.
+    Handles balance updates, portfolio changes, and now logs rich, detailed
+    transaction metadata to a JSONB field.
     """
     conn = get_connection()
     if not conn: return None
 
     with conn.cursor() as cursor:
         try:
-            # 1. Lock the user's balance row and update it
+            # 1. Lock and update balance (logic is unchanged)
             cursor.execute("SELECT balance FROM balances WHERE discord_id = %s FOR UPDATE;", (actor_id,))
             wallet = cursor.fetchone()
-            if not wallet or wallet[0] < -total_cost: # Check for sufficient funds on buy
+            if not wallet or wallet[0] < -total_cost:
                 conn.rollback()
-                return None # Insufficient funds
+                return None
             
             cursor.execute("UPDATE balances SET balance = balance + %s WHERE discord_id = %s RETURNING balance;", (total_cost, actor_id))
             new_balance = cursor.fetchone()[0]
 
-            # 2. Update the portfolio (UPSERT logic)
-            # This will insert a new portfolio row or update an existing one
+            # 2. Update portfolio (logic is unchanged)
             cursor.execute("""
                 INSERT INTO portfolios (investor_discord_id, stock_ingamename, shares_owned)
                 VALUES (%s, %s, %s)
@@ -669,11 +812,20 @@ def execute_trade_transaction(actor_id: str, stock_name: str, shares: float, tot
                 SET shares_owned = portfolios.shares_owned + EXCLUDED.shares_owned;
             """, (actor_id, stock_name, shares))
 
-            # 3. Log the transaction
+            # --- THIS IS THE NEW LOGIC ---
+            # 3. Create rich JSON details for the transaction log.
+            details = json.dumps({
+                "price_per_share": round(price_per_share, 2),
+                "shares_transacted": round(shares, 4),
+                "subtotal": round(abs(total_cost) - fee, 2),
+                "fee_paid": round(fee, 2)
+            })
+
+            # 4. Log the complete transaction with all new details.
             cursor.execute("""
-                INSERT INTO transactions (actor_id, transaction_type, item_name, cc_amount, fee_paid, balance_after)
-                VALUES (%s, %s, %s, %s, %s, %s);
-            """, (actor_id, transaction_type, f"{stock_name}'s Stock", total_cost, fee, new_balance))
+                INSERT INTO transactions (actor_id, target_id, transaction_type, item_name, item_quantity, cc_amount, fee_paid, details, balance_after)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+            """, (actor_id, target_id, transaction_type, f"{stock_name}'s Stock", shares, total_cost, fee, details, new_balance))
 
             conn.commit()
             return new_balance
@@ -682,6 +834,78 @@ def execute_trade_transaction(actor_id: str, stock_name: str, shares: float, tot
             conn.rollback()
             return None
     conn.close()
+
+def get_trades_without_details():
+    """
+    Fetches all INVEST and SELL transactions that are missing the details JSON.
+    This is used by the backfill script to identify which records to process.
+    """
+    conn = get_connection()
+    if not conn: return pd.DataFrame()
+    query = """
+        SELECT transaction_id, timestamp, item_name, item_quantity, cc_amount, fee_paid
+        FROM transactions
+        WHERE transaction_type IN ('INVEST', 'SELL') AND details IS NULL
+        ORDER BY timestamp ASC;
+    """
+    df = pd.read_sql(query, conn)
+    conn.close()
+    return df
+
+def get_historical_price(ingamename: str, timestamp: datetime):
+    """
+    Finds the price of a stock at a specific point in history.
+    It looks for the most recent price record at or before the given timestamp.
+    """
+    conn = get_connection()
+    if not conn: return None
+    with conn.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT price FROM stock_price_history
+            WHERE ingamename = %s AND timestamp <= %s
+            ORDER BY timestamp DESC
+            LIMIT 1;
+            """,
+            (ingamename, timestamp)
+        )
+        result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def execute_trade_details_backfill(updates: list):
+    """
+    Executes the backfill for trade details.
+    Takes a list of tuples (details_json, target_id, transaction_id)
+    and updates the corresponding rows in the transactions table.
+    """
+    conn = get_connection()
+    if not conn:
+        logging.error("BACKFILL FAILED: Cannot connect to the database.")
+        return False
+    
+    with conn.cursor() as cursor:
+        try:
+            # extras.execute_batch is highly efficient for running many UPDATEs.
+            extras.execute_batch(
+                cursor,
+                """
+                UPDATE transactions
+                SET details = %s, target_id = %s
+                WHERE transaction_id = %s;
+                """,
+                updates
+            )
+            conn.commit()
+            logging.info(f"BACKFILL: Successfully updated details for {len(updates)} trade transactions.")
+            return True
+        except (Exception, psycopg2.Error) as error:
+            logging.error(f"BACKFILL FAILED: Error updating trade details: {error}")
+            conn.rollback()
+            return False
+        finally:
+            if conn is not None:
+                conn.close()
 
 def get_shop_data(discord_id: str):
     """
@@ -869,10 +1093,11 @@ def get_financial_summary(discord_id: str) -> dict:
             
     return summary
 
+
 def get_earnings_history(discord_id: str, days: int) -> pd.DataFrame:
     """
-    Fetches a user's earnings history (periodic earnings and dividends) for a
-    specified number of days.
+    Fetches a user's earnings history for a specified number of days.
+    This includes standard earnings, dividends, and special cases like admin awards.
 
     Args:
         discord_id: The user's Discord ID.
@@ -886,9 +1111,11 @@ def get_earnings_history(discord_id: str, days: int) -> pd.DataFrame:
     if not conn:
         return pd.DataFrame()
 
-    # This query efficiently filters the transactions table for specific types
-    # within a given time window. An index on `actor_id` and `transaction_type`
-    # would further optimize performance for users with very large histories.
+    # --- REVISED QUERY ---
+    # The WHERE clause is now more complex to handle two different conditions.
+    # 1. It selects transactions where the user is the ACTOR for standard income types.
+    # 2. It ORs that with a condition where the user is the TARGET for ADMIN_AWARDs.
+    # This correctly captures all forms of income for the user.
     query = """
         SELECT
             timestamp,
@@ -896,15 +1123,20 @@ def get_earnings_history(discord_id: str, days: int) -> pd.DataFrame:
             item_name,
             cc_amount
         FROM transactions
-        WHERE
-            actor_id = %s
-            AND transaction_type IN ('PERIODIC_EARNINGS', 'DIVIDEND')
-            AND timestamp >= NOW() - INTERVAL '%s days'
+        WHERE (
+            -- Condition 1: User is the one performing the action
+            (actor_id = %(user_id)s AND transaction_type IN ('PERIODIC_EARNINGS', 'DIVIDEND', 'SELL'))
+            OR
+            -- Condition 2: User is the one receiving an admin award
+            (target_id = %(user_id)s AND transaction_type = 'ADMIN_AWARD')
+        )
+        AND timestamp >= NOW() - INTERVAL '%(days)s days'
         ORDER BY timestamp DESC;
     """
     df = pd.DataFrame()
     try:
-        df = pd.read_sql(query, conn, params=(discord_id, days))
+        # We now pass a dictionary of parameters to handle the named placeholders.
+        df = pd.read_sql(query, conn, params={'user_id': discord_id, 'days': days})
     except (Exception, psycopg2.Error) as error:
         logging.error(f"Error fetching earnings history for {discord_id}: {error}")
     finally:
@@ -915,50 +1147,43 @@ def get_earnings_history(discord_id: str, days: int) -> pd.DataFrame:
 def get_transaction_ledger(discord_id: str) -> pd.DataFrame:
     """
     Retrieves a user's complete transaction history, calculating a running
-    balance for each entry at the database level for maximum efficiency.
-
-    Args:
-        discord_id: The user's Discord ID.
-
-    Returns:
-        A pandas DataFrame of the full transaction ledger, sorted chronologically.
-        Returns an empty DataFrame if the user has no transactions.
+    balance that correctly incorporates the starting balance.
     """
     conn = get_connection()
     if not conn:
         return pd.DataFrame()
 
-    # The key to this query is the window function `SUM(cc_amount) OVER (...)`.
-    # It calculates the cumulative sum of `cc_amount` for each row in the result
-    # set, ordered by the timestamp. This offloads the complex and slow task of
-    # calculating a running balance from the Python application to the database,
-    # which is optimized for such set-based operations.
+    # --- THIS IS THE CORRECTED QUERY ---
+    # All instances of `%(user_id)s` have been replaced with the standard `%s`
+    # placeholder to ensure compatibility with the database driver.
     query = """
+    WITH UserTransactions AS (
         SELECT
-            transaction_id,
-            timestamp,
-            transaction_type,
-            item_name,
-            item_quantity,
-            cc_amount,
-            fee_paid,
-            details,
-            -- This window function is the most efficient way to get a running balance.
-            -- It sums the `cc_amount` of all transactions from the beginning up to the current row.
-            SUM(cc_amount) OVER (ORDER BY timestamp, transaction_id) AS running_balance
+            *,
+            SUM(cc_amount) OVER (ORDER BY timestamp, transaction_id) as transaction_sum
         FROM transactions
         WHERE actor_id = %s
-        ORDER BY timestamp DESC;
+    )
+    SELECT
+        t.transaction_id,
+        t.timestamp,
+        t.transaction_type,
+        t.item_name,
+        t.item_quantity,
+        t.cc_amount,
+        t.fee_paid,
+        t.details,
+        (SELECT balance FROM balances WHERE discord_id = %s) -
+        (SELECT SUM(cc_amount) FROM transactions WHERE actor_id = %s) +
+        t.transaction_sum AS running_balance
+    FROM UserTransactions t
+    ORDER BY t.timestamp DESC;
     """
     df = pd.DataFrame()
     try:
-        df = pd.read_sql(query, conn, params=(discord_id,))
-        # The 'details' column is returned as a JSON string from the DB,
-        # so we convert it to a Python dict for easier handling in the bot.
-        # Errors='coerce' will turn any parsing errors into NaT/None.
-        if not df.empty and 'details' in df.columns:
-            df['details'] = df['details'].apply(lambda x: json.loads(x) if x else None)
-
+        # The params argument is now a tuple containing the discord_id three times,
+        # one for each `%s` placeholder in the query.
+        df = pd.read_sql(query, conn, params=(discord_id, discord_id, discord_id))
     except (Exception, psycopg2.Error) as error:
         logging.error(f"Error fetching transaction ledger for {discord_id}: {error}")
     finally:

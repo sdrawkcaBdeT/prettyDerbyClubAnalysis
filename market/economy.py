@@ -156,19 +156,14 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
     updated_balances_df = pd.DataFrame(balance_map.items(), columns=['inGameName', 'balance'])
     updated_balances_df = pd.merge(updated_balances_df, crew_coins_df[['inGameName', 'discord_id']], on='inGameName', how='left')
 
+
     final_balance_map = updated_balances_df.set_index('discord_id')['balance'].to_dict()
     
-    final_transactions = []
     for record in new_transaction_records:
-        actor_id = record['actor_id']
-        # Update the balance_after field
-        record['balance_after'] = final_balance_map.get(actor_id)
-        # Convert record to tuple in the correct order for the DB
-        final_transactions.append((
-            record['timestamp'], record['actor_id'], record['target_id'],
-            record['transaction_type'], record['item_name'], record['item_quantity'],
-            record['cc_amount'], record['fee_paid'], record['details'], record['balance_after']
-        ))
+        actor_id = record.get('actor_id')
+        if actor_id in final_balance_map:
+            record['balance_after'] = final_balance_map[actor_id]
 
-    print("CC earnings processed and detailed transaction records created.")
-    return updated_balances_df, final_transactions
+    print(f"CC earnings processed. {len(new_transaction_records)} detailed transaction records created.")
+
+    return updated_balances_df, new_transaction_records

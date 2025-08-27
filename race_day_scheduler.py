@@ -13,8 +13,8 @@ scripts = {
     
     # --- Sequences ---
     # Runs the full data collection and analysis pipeline
-    "full_run": ["dataGet.py", "validate_data.py", "analysis.py", "generate_visuals.py"],
-    "full_run_once": ["dataGet.py", "validate_data.py", "analysis.py", "generate_visuals.py"],
+    "full_run": ["dataGet.py", "analysis.py"], # "validate_data.py", "generate_visuals.py"
+    "full_run_once": ["dataGet.py", "analysis.py"],
 }
 
 def wait_for_scheduled_start():

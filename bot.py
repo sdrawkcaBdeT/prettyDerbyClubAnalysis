@@ -20,6 +20,8 @@ from race_logic_v2 import Horse, Race, Bookie
 from race_bots import BotManager
 from market import database
 import numpy as np
+import math
+from generate_visuals import generate_portfolio_image, format_pl_part
 
 # --- Configuration ---
 COMMAND_LOG_CSV = 'command_log.csv'
@@ -552,6 +554,7 @@ async def help(ctx):
     embed.add_field(name="PERSONAL STATS", value="`/myprogress` - Get a personalized summary of your progress since you last checked.", inline=False)
     embed.add_field(name="CLUB CHARTS & REPORTS", value=("`/top10` - Shows the current top 10 members by monthly fan gain.\n" "`/prestige_leaderboard` - Displays the all-time prestige point leaderboard.\n" "`/performance` - Posts the historical fan gain heatmap.\n" "`/log [member_name]` - Gets the detailed performance log for any member."), inline=False)
     embed.add_field(name="FAN EXCHANGE (Stock Market)", value=("`/exchange_help` - Provides a concise explanation and startup guide for the Fan Exchange system.\n" "`/market` - Displays the all stocks and some info.\n" "`/portfolio` - View your current stock holdings and their performance.\n" "`/stock [name/ticker]` - Shows the price history and stats for a specific racer.\n" "`/invest [name/ticker] [amount]` - Buy shares in a racer's stock, specifying CC to invest.\n" "`/sell [name/ticker] [amount]` - Sell shares of a racer's stock, specifying shares to sell.\n" "`/shop` - See what you can buy with your CC! Earnings upgrades and prestige!" "`/buy [shop_id]` - Purchase something from the shop!" "`/set_ticker [2-5 letter ticker]` - Set your unique stock ticker symbol."), inline=False)
+    embed.add_field(name="FINANCIAL REPORTING", value=("`/financial_summary` - Get a high-level overview of your net worth, P/L, and ROI.\n" "`/earnings [7 or 30]` - View a detailed list of your income from earnings and dividends.\n" "`/ledger` - See a complete, paginated history of all your transactions."), inline=False)
     embed.set_footer(text="Remember to use the command prefix '/' before each command.")
     await ctx.send(embed=embed, ephemeral=True)
 
@@ -672,11 +675,13 @@ async def exchange_help(ctx):
     embed.add_field(
         name="🤖 Core Commands",
         value="`/portfolio` - See your CC and stock holdings.\n"
+              "`/financial_summary` - View your overall Net Worth and P/L.\n"
+              "`/earnings` - Check your recent income history.\n"
+              "`/ledger` - Review every transaction you've ever made.\n"
               "`/market` - View the top market movers.\n"
               "`/stock [name/ticker]` - Get info on a specific stock.\n"
-              "`/invest [name/ticker] [amount]` - Buy shares.\n"
-              "`/sell [name/ticker] [shares]` - Sell shares.\n"
-              "`/shop` & `/buy [item_id]` - Spend your CC!",
+              "`/invest` & `/sell` - Buy and sell shares.\n"
+              "`/shop` & `/buy` - Spend your CC!",
         inline=False
     )
     await ctx.send(embed=embed, ephemeral=True)
@@ -961,11 +966,11 @@ async def buy(ctx, item_id: str):
 
 @bot.command(name="portfolio")
 async def portfolio(ctx):
-    """Displays the user's current CC balance, stock holdings, and P/L with pagination."""
+    """Displays account summary and a paginated image of stock holdings."""
     user_id = str(ctx.author.id)
-    inGameName = get_inGameName(ctx.author.id)
+    inGameName = get_inGameName(user_id)
 
-    # --- REFACTORED: Fetch all data from the database using our powerful functions ---
+    # --- 1. Data Fetching and Calculations (Unchanged) ---
     balance = database.get_user_balance_by_discord_id(user_id)
     if balance is None:
         return await ctx.send("You do not have a Fan Exchange account yet.", ephemeral=True)
@@ -974,25 +979,19 @@ async def portfolio(ctx):
     market_snapshot, _ = database.get_market_snapshot()
     sponsorships_list = database.get_sponsorships(user_id)
 
-    # --- Calculations (Your original logic, now using DB data) ---
     total_stock_value = 0
     total_day_change = 0
 
     if not portfolio_df.empty and market_snapshot is not None:
-        # Merge market data to get 24h price changes
         portfolio_df = pd.merge(portfolio_df, market_snapshot[['ingamename', 'price_24h_ago']], left_on='stock_ingamename', right_on='ingamename', how='left')
-        
         portfolio_df['value'] = portfolio_df['shares_owned'] * portfolio_df['current_price']
         portfolio_df['pl'] = (portfolio_df['current_price'] - portfolio_df['cost_basis']) * portfolio_df['shares_owned']
-        # Avoid division by zero for stocks with no purchase history
         portfolio_df['pl_percent'] = portfolio_df.apply(
             lambda row: (row['pl'] / (row['cost_basis'] * row['shares_owned'])) * 100 if row['cost_basis'] > 0 and row['shares_owned'] > 0 else 0,
             axis=1
         )
-        
         day_price_change = portfolio_df['current_price'] - portfolio_df['price_24h_ago']
         portfolio_df['day_change_value'] = day_price_change * portfolio_df['shares_owned']
-
         total_stock_value = portfolio_df['value'].sum()
         total_day_change = portfolio_df['day_change_value'].sum()
 
@@ -1001,7 +1000,6 @@ async def portfolio(ctx):
     
     portfolio_df.sort_values('value', ascending=False, inplace=True)
 
-    # --- Sponsorship Text (Your original logic, restored) ---
     sponsorships = []
     for sponsor_info in sponsorships_list:
         lead = float(sponsor_info['lead_amount'])
@@ -1009,71 +1007,80 @@ async def portfolio(ctx):
         sponsorship_name = f"${sponsor_info['ticker']}" if pd.notna(sponsor_info['ticker']) else sponsor_info['stock_ingamename']
         sponsorships.append(f"{sponsorship_name} {sponsorship_text}")
 
-    # --- PAGINATION LOGIC (Your original logic) ---
+    # --- 2. Pagination and Embed Generation ---
     stocks_per_page = 10
     pages = [portfolio_df.iloc[i:i + stocks_per_page] for i in range(0, len(portfolio_df), stocks_per_page)]
-    if not pages: pages.append(pd.DataFrame())
+    if not pages: # Ensure there's at least one (empty) page
+        pages.append(pd.DataFrame())
+    total_pages = len(pages)
     current_page = 0
 
-    async def generate_embed(page_num):
-        embed = discord.Embed(title=f"{ctx.author.display_name}'s Portfolio", description=f"*In-Game Name: {inGameName}*", color=discord.Color.gold())
+    # This function now builds the complete embed, including the summary and footer.
+    async def get_page_content(page_num):
+        page_data = pages[page_num]
+        
+        # Generate the image for the current page's holdings
+        image_file = generate_portfolio_image(page_data)
+        
+        embed = discord.Embed(
+            title=f"{ctx.author.display_name}'s Portfolio",
+            description=f"*In-Game Name: {inGameName}*",
+            color=discord.Color.gold()
+        )
+        
+        # --- SUMMARY AND FOOTER ARE NOW PART OF THE EMBED ---
         summary_text = (
             f"```\n"
-            f"CC Balance:      {format_cc(balance)}\n"
-            f"Stock CC:     {format_cc(total_stock_value)}\n"
-            f"Total CC:     {format_cc(total_portfolio_value)}\n"
-            f"Today's Δ:       {'+' if total_day_change >= 0 else ''}{format_cc(total_day_change)} ({'+' if total_day_change_percent >= 0 else ''}{total_day_change_percent:.2f}%)\n"
+            f"CC Balance:     {format_cc(balance)}\n"
+            f"Stock Value:    {format_cc(total_stock_value)}\n"
+            f"Net Worth:      {format_cc(total_portfolio_value)}\n"
+            f"24 Hour Δ:      {'+' if total_day_change >= 0 else ''}{format_cc(total_day_change)}, {'+' if total_day_change_percent >= 0 else ''}{total_day_change_percent:.2f}%\n"
             f"```"
         )
         embed.add_field(name="💰 Account Summary", value=summary_text, inline=False)
         
-        page_data = pages[page_num]
-        holdings_text = "```\n"
-        holdings_text += "{:<7} | {:<7} | {:<8} | {:<10} | {}\n".format("Ticker", "Shares", "CC", "Today's Δ", "P/L")
-        holdings_text += "-"*56 + "\n"
-        if not page_data.empty:
-            for _, stock in page_data.iterrows():
-                display_name = f"{stock['ticker']}" if pd.notna(stock['ticker']) else stock['stock_ingamename'][:5]
-                pl_str = f"{'+' if stock['pl'] >= 0 else ''}{stock['pl']:,.0f}, {'+' if stock['pl_percent'] >= 0 else ''}{stock['pl_percent']:.1f}%"
-                day_change_str = f"{'+' if stock['day_change_value'] >= 0 else ''}{stock['day_change_value']:,.0f}"
-                value_str = f"{stock['value']:,.0f}"
-
-                holdings_text += "{:<7} | {:<7.2f} | {:<8} | {:<10} | {}\n".format(
-                    display_name, float(stock['shares_owned']), value_str, day_change_str, pl_str
-                )
-        else:
-            holdings_text += "You do not own any stocks.\n"
-        holdings_text += "```"
-        embed.add_field(name=f"📈 Stock Holdings (Page {page_num + 1}/{len(pages)})", value=holdings_text, inline=False)
+        # The title of this field now acts as the holdings header
+        embed.add_field(
+            name=f"📈 Stock Holdings (Page {page_num + 1}/{total_pages})",
+            value="See image below.",
+            inline=False
+        )
 
         if sponsorships:
             embed.set_footer(text=f"🏆 Sponsorships: {', '.join(sponsorships)}")
-        return embed
+        
+        embed.set_image(url=f"attachment://{image_file.filename}")
+        return embed, image_file
 
+    # --- 3. Initial Display and View Setup ---
+    initial_embed, initial_file = await get_page_content(current_page)
+    
     view = discord.ui.View()
     prev_button = discord.ui.Button(label="◀️ Previous", style=discord.ButtonStyle.secondary, disabled=True)
-    next_button = discord.ui.Button(label="Next ▶️", style=discord.ButtonStyle.secondary, disabled=len(pages) <= 1)
+    next_button = discord.ui.Button(label="Next ▶️", style=discord.ButtonStyle.secondary, disabled=total_pages <= 1)
 
-    async def prev_callback(interaction):
+    async def prev_callback(interaction: discord.Interaction):
         nonlocal current_page
         current_page -= 1
+        embed, file = await get_page_content(current_page)
         prev_button.disabled = current_page == 0
         next_button.disabled = False
-        await interaction.response.edit_message(embed=await generate_embed(current_page), view=view)
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=view)
 
-    async def next_callback(interaction):
+    async def next_callback(interaction: discord.Interaction):
         nonlocal current_page
         current_page += 1
-        next_button.disabled = current_page == len(pages) - 1
+        embed, file = await get_page_content(current_page)
+        next_button.disabled = current_page >= total_pages - 1
         prev_button.disabled = False
-        await interaction.response.edit_message(embed=await generate_embed(current_page), view=view)
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=view)
 
     prev_button.callback = prev_callback
     next_button.callback = next_callback
     view.add_item(prev_button)
     view.add_item(next_button)
 
-    await ctx.send(embed=await generate_embed(current_page), view=view)
+    await ctx.send(embed=initial_embed, file=initial_file, view=view)
 
 @bot.command(name="market")
 async def market(ctx):
@@ -1162,53 +1169,36 @@ async def market(ctx):
 
     await ctx.send(embed=await generate_embed(current_page), view=view)
 
-@bot.command()
-async def ledger(ctx):
-    """Posts the market_ledger.png chart to the current channel."""
-    try:
-        # Define the path to the image
-        file_path = os.path.join(OUTPUT_DIR, 'market_ledger.png')
-
-        # Check if the file actually exists before trying to send it
-        if not os.path.exists(file_path):
-            await ctx.send(f"{ctx.author.mention}, the market ledger image could not be found. Please run a data refresh.")
-            return
-
-        # Create a discord.File object from the path and send it
-        await ctx.send(
-            f"{ctx.author.mention} here is the market ledger!",
-            file=discord.File(file_path)
-        )
-    except Exception as e:
-        await ctx.send(f"An error occurred while trying to send the ledger: {e}")
-
 @bot.command(name="stock")
 async def stock(ctx, *, identifier: str):
     """Displays detailed information and a price chart for a given stock."""
-    # --- REFACTORED: Fetch all data from the database in one go ---
     stock_info, history_df, top_holders_df = database.get_stock_details(identifier)
     
     if not stock_info:
         return await ctx.send(f"Could not find a stock for '{identifier}'.", ephemeral=True)
 
-    # --- Calculations (Your original logic, now using DB data) ---
     ingamename = stock_info['ingamename']
     current_price = float(stock_info['current_price'])
     
-    # Calculate 24h change
+    # --- Calculations ---
     price_24h_ago = current_price
+    all_time_high = current_price
+    all_time_low = current_price
+
     if not history_df.empty:
-        past_prices = history_df[history_df['timestamp'] < datetime.now(pytz.utc) - timedelta(days=1)]
+        # This conversion is now correct and necessary
+        history_df['timestamp'] = pd.to_datetime(history_df['timestamp'])
+        
+        past_prices = history_df[history_df['timestamp'] < (datetime.now(pytz.utc) - timedelta(days=1))]
         if not past_prices.empty:
             price_24h_ago = float(past_prices['price'].iloc[-1])
+        
+        all_time_high = history_df['price'].max()
+        all_time_low = history_df['price'].min()
 
     price_change = current_price - price_24h_ago
     percent_change = (price_change / price_24h_ago) * 100 if price_24h_ago > 0 else 0
     
-    all_time_high = history_df['price'].max() if not history_df.empty else current_price
-    all_time_low = history_df['price'].min() if not history_df.empty else current_price
-
-    # Calculate Market Cap
     market_snapshot, _ = database.get_market_snapshot()
     market_cap = 0
     if market_snapshot is not None:
@@ -1216,7 +1206,6 @@ async def stock(ctx, *, identifier: str):
         if not stock_market_info.empty:
             market_cap = stock_market_info['market_cap'].iloc[0]
 
-    # --- Formatting (Your original logic) ---
     display_ticker = f" ({stock_info['ticker']})" if stock_info['ticker'] else ""
     embed = discord.Embed(title=f"Stock Info: {ingamename}{display_ticker}", color=discord.Color.green())
     
@@ -1233,14 +1222,16 @@ async def stock(ctx, *, identifier: str):
     
     holders_text = "```\n"
     if not top_holders_df.empty:
-        for i, (_, holder) in top_holders_df.iterrows():
-            holders_text += f"{i+1}. {holder['ingamename']:<15} ({float(holder['shares_owned']):.2f} sh)\n"
+        # --- THIS IS THE FIX ---
+        # The loop is now structured correctly. 'i' gets the index, and 'holder'
+        # gets the entire row as a pandas Series object.
+        for i, holder in top_holders_df.iterrows():
+            holders_text += f"{i+1}. {holder['ingamename']:<15} {float(holder['shares_owned']):.2f} shares\n"
     else:
         holders_text += "No public shareholders.\n"
     holders_text += "```"
     embed.add_field(name="🏆 Top 5 Shareholders", value=holders_text, inline=False)
     
-    # --- Personalized Footer (Your original logic) ---
     user_portfolio = database.get_portfolio_details(str(ctx.author.id))
     user_holding = user_portfolio[user_portfolio['stock_ingamename'] == ingamename]
     if not user_holding.empty:
@@ -1251,8 +1242,7 @@ async def stock(ctx, *, identifier: str):
         footer_text = f"Your Position: You own {shares_owned:.2f} shares with a P/L of {format_cc(pl)} ({'+' if pl_percent >= 0 else ''}{pl_percent:.1f}%)."
         embed.set_footer(text=footer_text)
 
-    # --- Chart (Your original logic) ---
-    if not history_df.empty and len(history_df) > 1:
+    if not history_df.empty and len(history_df) > 1 and pd.api.types.is_datetime64_any_dtype(history_df['timestamp']):
         plt.style.use('dark_background')
         fig, ax = plt.subplots(figsize=(10, 4))
         ax.plot(history_df['timestamp'], history_df['price'], color='#00FF00', linewidth=2)
@@ -1275,9 +1265,407 @@ async def stock(ctx, *, identifier: str):
     else:
         await ctx.send(embed=embed)
 
+@bot.command(name="financial_summary")
+async def financial_summary(ctx):
+    """Displays a user's high-level financial summary, including Net Worth, P/L, and ROI."""
+    user_id = str(ctx.author.id)
+
+    # --- FIX: Registration check is now performed against the database ---
+    # This aligns the command's behavior with /portfolio and other core
+    # market functions, using the database as the single source of truth.
+    user_details = database.get_user_details(user_id)
+    if not user_details:
+        await ctx.send("You do not have a Fan Exchange account. Please use `/register` first.", ephemeral=True)
+        return
+
+    in_game_name = user_details['ingamename']
+
+    # This command relies on a single, efficient database call that performs all
+    # complex calculations (P/L, ROI, etc.) at the database level. This keeps the
+    # bot's logic clean, simple, and fast.
+    summary_data = database.get_financial_summary(user_id)
+
+    # The embed is designed for clarity, using formatted fields to present
+    # the key performance indicators (KPIs) in an easily digestible way.
+    embed = discord.Embed(
+        title=f"{ctx.author.display_name}'s Financial Summary",
+        description=f"*In-Game Name: {in_game_name}*",
+        color=discord.Color.blue()
+    )
+
+    # Determine color and sign for P/L and ROI for better visual feedback.
+    p_l = summary_data['p_l']
+    roi = summary_data['roi_percent']
+    p_l_sign = "+" if p_l >= 0 else ""
+    roi_sign = "+" if roi >= 0 else ""
+    embed_color = discord.Color.green() if p_l >= 0 else discord.Color.red()
+    embed.color = embed_color
+
+    embed.add_field(
+        name="💰 Net Worth",
+        value=f"**{format_cc(summary_data['net_worth'])}**\n(CC Balance + Stock Value)",
+        inline=False
+    )
+    embed.add_field(
+        name="📈 Portfolio Value",
+        value=f"{format_cc(summary_data['total_portfolio_value'])}",
+        inline=True
+    )
+    embed.add_field(
+        name="💸 Profit / Loss (P/L)",
+        value=f"{p_l_sign}{format_cc(p_l)}",
+        inline=True
+    )
+    embed.add_field(
+        name="📊 Return on Investment (ROI)",
+        value=f"{roi_sign}{roi:.2f}%",
+        inline=True
+    )
+    embed.set_footer(text="All data reflects your lifetime market activity.")
+
+    await ctx.send(embed=embed)
+
+# bot.py
+
+# (Replace the existing /earnings command with this new version)
+
+@bot.command(name="earnings")
+async def earnings(ctx, days: int = 7):
+    """
+    Displays your earnings history (periodic income and dividends) over the
+    last 7 or 30 days in a paginated embed.
+    """
+    user_id = str(ctx.author.id)
+
+    # --- 1. Input Validation & Data Fetching ---
+    if days not in [7, 30]:
+        await ctx.send("Please choose a valid period: 7 or 30 days.", ephemeral=True)
+        return
+
+    user_details = database.get_user_details(user_id)
+    if not user_details:
+        await ctx.send("You do not have a Fan Exchange account.", ephemeral=True)
+        return
+
+    earnings_df = database.get_earnings_history(user_id, days)
+
+    if earnings_df.empty:
+        await ctx.send(f"You have no earnings recorded in the last {days} days.", ephemeral=True)
+        return
+
+    # --- 2. Pagination Setup ---
+    items_per_page = 10
+    total_pages = math.ceil(len(earnings_df) / items_per_page)
+
+    async def get_page_embed(page_num: int):
+        start_index = page_num * items_per_page
+        end_index = start_index + items_per_page
+        page_df = earnings_df.iloc[start_index:end_index]
+
+        embed = discord.Embed(
+            title=f"Earnings History (Last {days} Days)",
+            color=discord.Color.gold()
+        )
+        
+        # --- SIMPLIFIED LAYOUT ---
+        # This version removes the "Type" column for a cleaner look,
+        # focusing only on the timestamp, amount, and the item itself.
+        
+        body = "```\n"
+        # Adjusted header to be simpler.
+        body += "{:<16} | {:>14} | {}\n".format("Timestamp (CT)", "Amount", "Item")
+        body += "-" * 56 + "\n"
+
+        central_tz = pytz.timezone('US/Central')
+
+        for _, row in page_df.iterrows():
+            timestamp = row['timestamp'].astimezone(central_tz)
+            ts_str = timestamp.strftime('%Y/%m/%d %H:%M')
+            
+            # The item name is now the primary descriptor.
+            transaction_type = row['transaction_type'] if pd.notna(row['transaction_type']) else 'OTHER'
+            if len(transaction_type) > 25:
+                transaction_type = transaction_type[:22] + "..."
+
+            amount_str = f"{row['cc_amount']:,.2f} CC"
+
+            # The format string is updated to reflect the new three-column layout.
+            body += "{:<16} | {:>14} | {}\n".format(
+                ts_str,
+                amount_str,
+                transaction_type
+            )
+        
+        body += "```"
+        embed.description = body
+        embed.set_footer(text=f"Page {page_num + 1} of {total_pages}")
+        return embed
+
+    # --- 3. Initial Display ---
+    initial_embed = await get_page_embed(0)
+    view = PaginationView(ctx.interaction, get_page_embed, total_pages)
+    await ctx.send(embed=initial_embed, view=view)
+
+@bot.command(name="ledger")
+async def ledger(ctx):
+    """
+    Displays a full, paginated ledger of all your transactions with a running balance.
+    Provides interactive buttons to view detailed transaction metadata.
+    """
+    user_id = str(ctx.author.id)
+
+    user_details = database.get_user_details(user_id)
+    if not user_details:
+        await ctx.send("You do not have a Fan Exchange account.", ephemeral=True)
+        return
+
+    ledger_df = database.get_transaction_ledger(user_id)
+
+    if ledger_df.empty:
+        await ctx.send("You have no transactions recorded.", ephemeral=True)
+        return
+
+    # --- THIS IS THE FIX for the context error ---
+    # We now pass the standard `ctx` object to the view.
+    view = LedgerPaginationView(ctx, ledger_df)
+    initial_embed = view.get_current_page_embed()
+    await ctx.send(embed=initial_embed, view=view)
+    
+class PaginationView(discord.ui.View):
+    """
+    A generic, reusable view for creating paginated embeds.
+    This class handles the button logic and page state management.
+    It's designed to be subclassed or used directly by commands that need pagination.
+    """
+    def __init__(self, interaction: discord.Interaction, get_page_embed_func, total_pages: int):
+        super().__init__(timeout=180)
+        self.interaction = interaction
+        self.get_page_embed_func = get_page_embed_func
+        self.total_pages = total_pages
+        self.current_page = 0
+        self.update_buttons()
+
+    def update_buttons(self):
+        """Disables/enables navigation buttons based on the current page."""
+        # The `children` attribute is a list of all UI components in the view.
+        # We can safely assume the first is 'prev' and the second is 'next'.
+        self.children[0].disabled = self.current_page == 0
+        self.children[1].disabled = self.current_page == self.total_pages - 1
+
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.secondary)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # This callback decrements the page counter, updates the buttons, and edits
+        # the original message with the new page's embed.
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.update_buttons()
+            embed = await self.get_page_embed_func(self.current_page)
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # This callback increments the page counter, updates the buttons, and edits
+        # the original message with the new page's embed.
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self.update_buttons()
+            embed = await self.get_page_embed_func(self.current_page)
+            await interaction.response.edit_message(embed=embed, view=self)
+
+
+
+def format_transaction_details(details: dict, item_name: str, transaction_type: str) -> str:
+    """
+    A helper utility that intelligently formats the details of a transaction
+    based on its type, providing a clear and readable breakdown.
+    """
+    if not details:
+        return "No further details available for this transaction."
+
+    formatted_string = ""
+    
+    if transaction_type in ('INVEST', 'SELL'):
+        # Handles trades with correct signs and formatting
+        formatted_string += f"**Stock**: {item_name}\n"
+        shares = details.get('shares_transacted', 0)
+        price = details.get('price_per_share', 0)
+        subtotal = details.get('subtotal', 0)
+        fee = details.get('fee_paid', 0)
+        
+        shares_sign = "+" if shares >= 0 else ""
+        if transaction_type == "INVEST":
+            formatted_string += f"**Shares PURCHASED**: {shares_sign}{shares:,.2f}\n" # Not currency
+        
+        if transaction_type == "SELL":
+            formatted_string += f"**Shares SOLD**: {shares_sign}{shares:,.2f}\n" # Not currency
+        
+        formatted_string += f"**Price / Share**: {price:.2f} CC\n"
+        formatted_string += f"**Subtotal**: {subtotal:.2f} CC\n"
+        
+        formatted_string += f"**Fee Paid**: {fee:.2f} CC\n"
+        
+        formatted_string += "---------------------------------\n"
+        if transaction_type == "INVEST":            
+            formatted_string += f"**TOTAL COST**: {subtotal+fee:.2f} CC\n"
+        if transaction_type == "SELL":
+            formatted_string += f"**NET PROCEEDS**: {subtotal-fee:.2f} CC\n"
+
+    elif transaction_type == 'PERIODIC_EARNINGS':
+        # Handles earnings with logical order and correct formatting
+        key_order = [
+            ('tenure_yield', 'Tenure Yield'),
+            ('performance_yield', 'Performance Yield'),
+            ('hype_multiplier', 'Hype Multiplier'),
+            ('hype_bonus_yield', 'Hype Bonus Yield'),
+            ('base_cc_earned', 'Personal CC Earned')
+        ]
+        
+        for key, title in key_order:
+            if key in details:
+                value = details[key]
+                if key == 'base_cc_earned':
+                    formatted_string += "---------------------------------\n"
+                if key == 'hype_multiplier':
+                    formatted_string += f"**{title}**: {value:.2f}x\n" # Not currency
+                else:
+                    formatted_string += f"**{title}**: {value:.2f} CC\n"
+
+    elif transaction_type == 'DIVIDEND':
+        # Handles dividends with a clean, simple format
+        source = details.get('source_player', 'Unknown')
+        div_type = details.get('type', 'Dividend')
+        formatted_string += f"**Source Player**: {source}\n"
+        formatted_string += f"**Type**: {div_type}\n"
+
+    else:
+        # A fallback for any other type with details
+        for key, value in details.items():
+            title = key.replace('_', ' ').title()
+            formatted_string += f"**{title}**: {value}\n"
+            
+    return formatted_string
+
+class LedgerPaginationView(discord.ui.View):
+    """
+    A specialized pagination view for the transaction ledger with improved UI
+    for linking transactions to their detail buttons.
+    """
+    def __init__(self, ctx, ledger_df: pd.DataFrame):
+        super().__init__(timeout=180)
+        self.ctx = ctx
+        self.ledger_df = ledger_df
+        self.items_per_page = 8
+        self.total_pages = math.ceil(len(self.ledger_df) / self.items_per_page)
+        self.current_page = 0
+        self.details_cache = {}
+        self.rebuild_view()
+
+    def rebuild_view(self):
+        """Clears and rebuilds the UI components for the current page."""
+        self.clear_items()
+        self.details_cache.clear()
+        
+        start_index = self.current_page * self.items_per_page
+        end_index = start_index + self.items_per_page
+        page_df = self.ledger_df.iloc[start_index:end_index]
+
+        # Navigation buttons (row 0)
+        prev_button = discord.ui.Button(label="◀️ Previous", style=discord.ButtonStyle.secondary, disabled=self.current_page == 0, row=0)
+        next_button = discord.ui.Button(label="Next ▶️", style=discord.ButtonStyle.secondary, disabled=self.current_page >= self.total_pages - 1, row=0)
+        prev_button.callback = self.prev_page
+        next_button.callback = self.next_page
+        self.add_item(prev_button)
+        self.add_item(next_button)
+
+        details_counter = 1
+        for _, row in page_df.iterrows():
+            if row['details'] is not None and pd.notna(row['details']):
+                transaction_id = row['transaction_id']
+                self.details_cache[transaction_id] = {
+                    "details": row['details'],
+                    "item_name": row['item_name'],
+                    "transaction_type": row['transaction_type']
+                }
+                
+                button_row = 1 + ((details_counter - 1) // 5)
+                
+                details_button = discord.ui.Button(
+                    label=f"[{details_counter}] Details",
+                    style=discord.ButtonStyle.primary,
+                    custom_id=f"ledger_details:{transaction_id}",
+                    row=button_row
+                )
+                details_button.callback = self.show_details
+                self.add_item(details_button)
+                details_counter += 1
+    
+    def get_current_page_embed(self) -> discord.Embed:
+        """Generates the Discord embed for the current page."""
+        start_index = self.current_page * self.items_per_page
+        end_index = start_index + self.items_per_page
+        page_df = self.ledger_df.iloc[start_index:end_index]
+
+        embed = discord.Embed(title="Transaction Ledger", color=discord.Color.purple())
+        
+        body = ""
+        details_counter = 1
+        for _, row in page_df.iterrows():
+            unix_ts = int(row['timestamp'].timestamp())
+            cc_amount = row['cc_amount']
+            sign = "+" if cc_amount >= 0 else ""
+            
+            item_display_name = row['item_name']
+            if row['transaction_type'] == 'DIVIDEND' and row['details']:
+                div_type = row['details'].get('type', 'Dividend')
+                source = row['details'].get('source_player', 'Unknown')
+                item_display_name = f"{div_type} ({source})"
+
+            details_marker = ""
+            if row['details'] is not None and pd.notna(row['details']):
+                details_marker = f" `[{details_counter}]`"
+                details_counter += 1
+            
+            body += (f"**<t:{unix_ts}:R>**: **{row['transaction_type']}**\n"
+                     f"> Item: `{item_display_name}`\n"
+                     f"> Amount: `{sign}{cc_amount:.2f} CC` | Balance: `{format_cc(row['running_balance'])}`{details_marker}\n")
+        
+        embed.description = body
+        embed.set_footer(text=f"Page {self.current_page + 1} of {self.total_pages}")
+        return embed
+
+    # --- THESE METHODS WERE MISSING ---
+    async def prev_page(self, interaction: discord.Interaction):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.rebuild_view()
+            embed = self.get_current_page_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    async def next_page(self, interaction: discord.Interaction):
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self.rebuild_view()
+            embed = self.get_current_page_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    async def show_details(self, interaction: discord.Interaction):
+        transaction_id = int(interaction.data['custom_id'].split(':')[1])
+        cached_data = self.details_cache.get(transaction_id)
+        
+        formatted_details = format_transaction_details(
+            cached_data['details'],
+            cached_data['item_name'],
+            cached_data['transaction_type']
+        )
+        
+        await interaction.response.send_message(
+            f"### Details for Transaction ID: `{transaction_id}`\n{formatted_details}",
+            ephemeral=True
+        )
+
 # --- NEW: UI Class for Trade Confirmations ---
 class TradeConfirmationView(discord.ui.View):
-    def __init__(self, *, timeout=180, trade_details: dict):
+    def __init__(self, *, timeout=30, trade_details: dict):
         super().__init__(timeout=timeout)
         self.trade_details = trade_details
         self.confirmed = None
@@ -1324,7 +1712,7 @@ async def invest(ctx, identifier: str, shares_str: str):
     # 2. Calculate Trade Details
     current_price = float(stock['current_price'])
     subtotal = shares_to_buy * current_price
-    broker_fee = subtotal * 0.03 # Assuming 3% fee
+    broker_fee = subtotal * 0.03
     total_cost = subtotal + broker_fee
 
     if float(balance) < total_cost:
@@ -1344,12 +1732,16 @@ async def invest(ctx, identifier: str, shares_str: str):
         f"*Your new balance will be: {new_balance_preview:,.2f} CC*"
     )
     embed.description = details
-    
+    # Get the discord_id of the person whose stock is being bought
+    target_id = database.get_discord_id_by_name(stock['ingamename'])
+
     trade_details = {
         'actor_id': user_id,
+        'target_id': target_id, # Add target_id
         'stock_name': stock['ingamename'],
         'shares': shares_to_buy,
-        'total_cost': -total_cost, # Cost is negative for the DB transaction
+        'price_per_share': current_price, # Add price_per_share
+        'total_cost': -total_cost,
         'fee': broker_fee,
         'transaction_type': 'INVEST'
     }
@@ -1362,9 +1754,10 @@ async def invest(ctx, identifier: str, shares_str: str):
     if view.confirmed:
         new_balance = database.execute_trade_transaction(**view.trade_details)
         if new_balance is not None:
-            await ctx.followup.send(f"✅ **Trade Executed!** You purchased {shares_to_buy:,.2f} shares of **{stock['ingamename']}**. Your new balance is {format_cc(new_balance)}.", ephemeral=True)
+            await ctx.send(f"✅ **Trade Executed!** You purchased {shares_to_buy:,.2f} shares of **{stock['ingamename']}**. Your new balance is {format_cc(new_balance)}.", ephemeral=True)
         else:
-            await ctx.followup.send("❌ **Trade Failed!** This could be due to a price change or insufficient funds. Please try again.", ephemeral=True)
+            # Changed from ctx.followup.send to ctx.send for prefix command compatibility.
+            await ctx.send("❌ **Trade Failed!** This could be due to a price change or insufficient funds. Please try again.", ephemeral=True)
 
 @bot.command(name="sell")
 async def sell(ctx, identifier: str, shares_str: str):
@@ -1413,10 +1806,14 @@ async def sell(ctx, identifier: str, shares_str: str):
     )
     embed.description = details
     
+    target_id = database.get_discord_id_by_name(stock['ingamename'])
+
     trade_details = {
         'actor_id': user_id,
+        'target_id': target_id, # Add target_id
         'stock_name': stock['ingamename'],
         'shares': -shares_to_sell, # Selling removes shares
+        'price_per_share': current_price, # Add price_per_share
         'total_cost': total_proceeds, # Proceeds are positive
         'fee': broker_fee,
         'transaction_type': 'SELL'
@@ -1430,9 +1827,10 @@ async def sell(ctx, identifier: str, shares_str: str):
     if view.confirmed:
         new_balance = database.execute_trade_transaction(**view.trade_details)
         if new_balance is not None:
-            await ctx.followup.send(f"✅ **Trade Executed!** You sold {shares_to_sell:,.2f} shares of **{stock['ingamename']}**. Your new balance is {format_cc(new_balance)}.", ephemeral=True)
+            await ctx.send(f"✅ **Trade Executed!** You sold {shares_to_sell:,.2f} shares of **{stock['ingamename']}**. Your new balance is {format_cc(new_balance)}.", ephemeral=True)
         else:
-            await ctx.followup.send("❌ **Trade Failed!** This could be due to a price change or other error. Please try again.", ephemeral=True)
+            # Changed from ctx.followup.send to ctx.send for prefix command compatibility.
+            await ctx.send("❌ **Trade Failed!** This could be due to a price change or insufficient funds. Please try again.", ephemeral=True)
         
 BOT_PERSONALITIES = {
     "StartingGateSally": {"type": "starter"},
