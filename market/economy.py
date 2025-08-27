@@ -101,42 +101,54 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
             'balance_after': None # To be filled later
         })
         
-        # --- Dividend Logic (with enhanced logging) ---
-        shareholders = portfolios_df[portfolios_df['stock_inGameName'] == inGameName]
-        external_shareholders = shareholders[shareholders['investor_discord_id'] != discord_id].copy()
+        # --- Dividend Logic ---
+        # 1. Get all shareholders for the current earner
+        all_shareholders = portfolios_df[portfolios_df['stock_inGameName'] == inGameName]
+
+        # 2. THE FIX: Immediately filter out the earner themselves.
+        #    All subsequent logic will operate on this clean list of external investors.
+        external_shareholders = all_shareholders[all_shareholders['investor_discord_id'] != discord_id]
 
         if not external_shareholders.empty:
+            # 3. Find the single largest external shareholder for the Tier 1 dividend
             largest_shareholder = external_shareholders.loc[external_shareholders['shares_owned'].idxmax()]
             sponsor_discord_id = str(largest_shareholder['investor_discord_id'])
-            
+
+            # 4. Pay the Tier 1 (Sponsorship) Dividend
             sponsorship_dividend = 0.20 * total_personal_cc_earned
-            # Use a tuple to store amount and source for detailed logging
-            dividend_payouts[sponsor_discord_id] = dividend_payouts.get(sponsor_discord_id, []) + [(sponsorship_dividend, inGameName)]
+            if sponsorship_dividend > 0:
+                # Use a tuple to store (amount, source_name, dividend_type)
+                payout_info = (sponsorship_dividend, inGameName, 'Tier 1 Div')
+                dividend_payouts[sponsor_discord_id] = dividend_payouts.get(sponsor_discord_id, []) + [payout_info]
+
+            # 5. Identify all OTHER external shareholders for Tier 2 dividends
+            tier_2_recipients = external_shareholders[external_shareholders['investor_discord_id'] != sponsor_discord_id]
             
-            proportional_dividend_pool = 0.10 * total_personal_cc_earned
-            other_shareholders = external_shareholders[external_shareholders['investor_discord_id'] != sponsor_discord_id]
-            
-            if not other_shareholders.empty:
-                total_other_shares = other_shareholders['shares_owned'].sum()
-                if total_other_shares > 0:
-                    for _, shareholder in other_shareholders.iterrows():
+            if not tier_2_recipients.empty:
+                proportional_dividend_pool = 0.10 * total_personal_cc_earned
+                total_tier_2_shares = tier_2_recipients['shares_owned'].sum()
+
+                if total_tier_2_shares > 0 and proportional_dividend_pool > 0:
+                    for _, shareholder in tier_2_recipients.iterrows():
                         investor_id = str(shareholder['investor_discord_id'])
-                        proportion = shareholder['shares_owned'] / total_other_shares
+                        proportion = shareholder['shares_owned'] / total_tier_2_shares
                         proportional_payout = proportional_dividend_pool * proportion
-                        dividend_payouts[investor_id] = dividend_payouts.get(investor_id, []) + [(proportional_payout, inGameName)]
+                        
+                        payout_info = (proportional_payout, inGameName, 'Tier 2 Div')
+                        dividend_payouts[investor_id] = dividend_payouts.get(investor_id, []) + [payout_info]
 
     # --- Apply dividend payouts and create detailed transaction records ---
     discord_id_to_name_map = {v: k for k, v in id_map.items()}
     for sponsor_id, payouts in dividend_payouts.items():
-        for amount, source_name in payouts:
+        # The payout tuple now contains amount, source, and type
+        for amount, source_name, dividend_type in payouts:
             if sponsor_id in discord_id_to_name_map:
                 target_name = discord_id_to_name_map[sponsor_id]
                 balance_map[target_name] += amount
 
-                # --- NEW: Create detailed JSON for the dividend transaction ---
                 dividend_details = json.dumps({
                     'source_player': source_name,
-                    'type': 'Tier 1 Div' if source_name == largest_shareholder['stock_inGameName'] else 'Tier 2 Div'
+                    'type': dividend_type # Use the type from our tuple
                 })
 
                 new_transaction_records.append({
