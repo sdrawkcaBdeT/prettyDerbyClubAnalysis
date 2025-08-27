@@ -113,15 +113,7 @@ bot = commands.Bot(command_prefix='/', intents=intents, help_command=None)
 
 # --- Helper Functions ---
 
-def get_inGameName(discord_id):
-    """Looks up a user's in-game name from the registration file."""
-    if not os.path.exists(USER_REGISTRATIONS_CSV):
-        return None
-    registrations_df = pd.read_csv(USER_REGISTRATIONS_CSV)
-    user_entry = registrations_df[registrations_df['discord_id'] == discord_id]
-    if not user_entry.empty:
-        return user_entry.iloc[0]['inGameName']
-    return None
+
 
 def get_last_update_timestamp():
     """Reads the fan log and returns a Discord-formatted timestamp of the last entry."""
@@ -232,72 +224,100 @@ def is_admin(ctx):
         return str(ctx.author.id) in admin_ids
     except FileNotFoundError:
         return False
-
+    
 @bot.command(name="award_cc")
+
 @commands.check(is_admin)
 async def award_cc(ctx, member: str, amount: int):
-    """(Admin Only) Awards a specified amount of CC to a member."""
+    """(Admin Only) Awards a specified amount of CC to a member via the database."""
     admin_id = str(ctx.author.id)
 
     # --- 1. Input Validation ---
     if amount <= 0:
         return await ctx.send("Please enter a positive whole number for the amount.", ephemeral=True)
 
-    target_name = get_name_from_ticker_or_name(member)
-    if not target_name:
+    # --- 2. Find User in the Database ---
+    # This finds the user by their in-game name or ticker.
+    target_user = database.get_user_details_by_identifier(member)
+    if not target_user:
         return await ctx.send(f"Could not find a member or ticker named '{member}'.", ephemeral=True)
+    
+    target_id = target_user['discord_id']
+    target_name = target_user['ingamename']
 
-    # --- 2. File Locking for Safe Modification ---
-    lock_file = 'market/market.lock'
-    if os.path.exists(lock_file):
-        return await ctx.send("The market is currently busy. Please try again in a moment.", ephemeral=True)
-    open(lock_file, 'w').close()
+    # --- 3. Execute the Database Transaction ---
+    # This single function updates the balance AND logs the transaction safely.
+    new_balance = database.execute_admin_award(
+        admin_id=admin_id,
+        target_id=target_id,
+        amount=amount
+    )
 
-    try:
-        # --- 3. Core Logic: Modification ---
-        crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
-        target_user_row = crew_coins_df[crew_coins_df['inGameName'] == target_name]
+    if new_balance is None:
+        return await ctx.send("The transaction failed. Please check the bot logs.", ephemeral=True)
+        
+    # --- 4. Confirmation ---
+    embed = discord.Embed(
+        title="✅ CC Awarded Successfully",
+        description=f"You have awarded **{format_cc(amount)}** to **{target_name}**.",
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text=f"Their new balance is {format_cc(new_balance)}.")
+    await ctx.send(embed=embed)
 
-        if target_user_row.empty:
-            return await ctx.send(f"Could not find '{target_name}' in the crew_coins ledger.", ephemeral=True)
-
-        # Add the CC to the user's balance
-        crew_coins_df.loc[target_user_row.index, 'balance'] += amount
-        crew_coins_df.to_csv('market/crew_coins.csv', index=False)
-
-        # --- 4. Auditing ---
-        target_id = target_user_row['discord_id'].iloc[0]
-        log_market_transaction(
-            actor_id=admin_id,
-            transaction_type='ADMIN_AWARD',
-            target_id=target_id,
-            item_name="Admin Discretionary Award",
-            item_quantity=1, # Not relevant here, but the function requires it
-            cc_amount=amount,
-            fee_paid=0
-        )
-
-        # --- 5. Confirmation ---
-        new_balance = crew_coins_df.loc[target_user_row.index, 'balance'].iloc[0]
-        embed = discord.Embed(
-            title="✅ CC Awarded Successfully",
-            description=f"You have awarded **{format_cc(amount)}** to **{target_name}**.",
-            color=discord.Color.gold()
-        )
-        embed.set_footer(text=f"Their new balance is {format_cc(new_balance)}.")
-        await ctx.send(embed=embed)
-
-    except Exception as e:
-        await ctx.send(f"An unexpected error occurred: {e}", ephemeral=True)
-    finally:
-        # Always remove the lock file, even if an error occurs
-        os.remove(lock_file)
-
+        
 @award_cc.error
 async def award_cc_error(ctx, error):
+    # This block handles when a non-admin tries to use the command
     if isinstance(error, commands.CheckFailure):
-        await ctx.send("You do not have permission to use this command.", ephemeral=True)
+        member_who_failed = ctx.author
 
+        # --- 1. Create the embed and load the GIF files ---
+        file1 = discord.File("gifs/notalking.gif", filename="notalking.gif")
+        file2 = discord.File("gifs/banned.gif", filename="banned.gif")
+        files_to_send = [file1, file2]
+
+        embed = discord.Embed(
+            title="🚨 Permission Denied 🚨",
+            # Mention the user directly in the public message
+            description=f"**Action Taken:**{member_who_failed.mention} has been put in TIMEOUT for 60 minutes for attempting to use an admin command. This is a dictatorship and I'm having fun.",
+            color=discord.Color.red()
+        )
+        embed.set_image(url="attachment://banned.gif")
+        embed.set_thumbnail(url="attachment://notalking.gif")
+        
+        # --- 2. Take Action (Timeout) BEFORE sending the message ---
+        duration = timedelta(minutes=5)
+        reason = "Unauthorized use of an admin command."
+        
+        try:
+            await member_who_failed.timeout(duration, reason=reason)
+            # Add a field to the embed confirming the action
+            embed.add_field(name="Action Taken", value=f"User has been timed out for {duration.seconds // 60} minutes.")
+
+        except discord.Forbidden:
+            # If the bot can't time them out, add a field explaining that instead
+            embed.add_field(name="Action Failed", value=f"I don't have permission to take action against this user.")
+        
+        # --- 3. Send the final, public message to the channel ---
+        await ctx.send(embed=embed, files=files_to_send)
+        
+        return # Stop the function here
+
+    # This is a fallback for other potential errors with the command
+    await ctx.send(f"An unexpected error occurred: {error}")
+
+
+
+def get_inGameName(discord_id):
+    """Looks up a user's in-game name from the registration file."""
+    if not os.path.exists(USER_REGISTRATIONS_CSV):
+        return None
+    registrations_df = pd.read_csv(USER_REGISTRATIONS_CSV)
+    user_entry = registrations_df[registrations_df['discord_id'] == discord_id]
+    if not user_entry.empty:
+        return user_entry.iloc[0]['inGameName']
+    return None
 
 def load_market_file(filename, dtype=None):
     """Safely loads a CSV file from the market directory."""
@@ -553,7 +573,7 @@ async def help(ctx):
     embed.add_field(name="SETUP (Required)", value="`/register [your-in-game-name]` - Links your Discord account to your exact in-game name. You must do this first!", inline=False)
     embed.add_field(name="PERSONAL STATS", value="`/myprogress` - Get a personalized summary of your progress since you last checked.", inline=False)
     embed.add_field(name="CLUB CHARTS & REPORTS", value=("`/top10` - Shows the current top 10 members by monthly fan gain.\n" "`/prestige_leaderboard` - Displays the all-time prestige point leaderboard.\n" "`/performance` - Posts the historical fan gain heatmap.\n" "`/log [member_name]` - Gets the detailed performance log for any member."), inline=False)
-    embed.add_field(name="FAN EXCHANGE (Stock Market)", value=("`/exchange_help` - Provides a concise explanation and startup guide for the Fan Exchange system.\n" "`/market` - Displays the all stocks and some info.\n" "`/portfolio` - View your current stock holdings and their performance.\n" "`/stock [name/ticker]` - Shows the price history and stats for a specific racer.\n" "`/invest [name/ticker] [amount]` - Buy shares in a racer's stock, specifying CC to invest.\n" "`/sell [name/ticker] [amount]` - Sell shares of a racer's stock, specifying shares to sell.\n" "`/shop` - See what you can buy with your CC! Earnings upgrades and prestige!" "`/buy [shop_id]` - Purchase something from the shop!" "`/set_ticker [2-5 letter ticker]` - Set your unique stock ticker symbol."), inline=False)
+    embed.add_field(name="FAN EXCHANGE (Stock Market)", value=("`/exchange_help` - Provides a concise explanation and startup guide for the Fan Exchange system.\n" "`/market` - Displays the all stocks and some info.\n" "`/portfolio` - View your current stock holdings and their performance.\n" "`/stock [name/ticker]` - Shows the price history and stats for a specific racer.\n" "`/invest [name/ticker] [amount]` - Buy shares in a racer's stock, specifying SHARES to invest.\n" "`/sell [name/ticker] [amount]` - Sell shares of a racer's stock, specifying shares to sell.\n" "`/shop` - See what you can buy with your CC! Earnings upgrades and prestige!" "`/buy [shop_id]` - Purchase something from the shop!" "`/set_ticker [2-5 letter ticker]` - Set your unique stock ticker symbol."), inline=False)
     embed.add_field(name="FINANCIAL REPORTING", value=("`/financial_summary` - Get a high-level overview of your net worth, P/L, and ROI.\n" "`/earnings [7 or 30]` - View a detailed list of your income from earnings and dividends.\n" "`/ledger` - See a complete, paginated history of all your transactions."), inline=False)
     embed.set_footer(text="Remember to use the command prefix '/' before each command.")
     await ctx.send(embed=embed, ephemeral=True)
@@ -668,7 +688,7 @@ async def exchange_help(ctx):
     embed.add_field(
         name="📈 Advanced Mechanics",
         value="**Hype Bonus**: The more members who own your stock, the bigger the bonus to your personal CC earnings!\n"
-              "**Sponsorship Deal**: Become the single largest shareholder of a stock to earn a **10% dividend** on that member's total CC earnings!\n"
+              "**Sponsorship Deal**: Become the single largest shareholder of a stock to earn a **20% dividend** on that member's total Personal CC Earnings! A Tier 2 Dividend pays out 10% proportionally to shareholders who own the stock buy are not the largest shareholder, so be sure to invest!\n"
               "**Shop Upgrades**: Use the `/shop` to spend CC on permanent upgrades that boost your Performance (active) and Tenure (passive) Yields, increasing your income.",
         inline=False
     )
@@ -1186,7 +1206,12 @@ async def stock(ctx, *, identifier: str):
     all_time_low = current_price
 
     if not history_df.empty:
-        # This conversion is now correct and necessary
+        # --- THIS IS THE FIX ---
+        # By adding errors='coerce', we force any non-numeric strings (like "NaN")
+        # into a proper, workable NaN value that pandas can handle.
+        history_df['price'] = pd.to_numeric(history_df['price'], errors='coerce')
+        # --- END FIX ---
+
         history_df['timestamp'] = pd.to_datetime(history_df['timestamp'])
         
         past_prices = history_df[history_df['timestamp'] < (datetime.now(pytz.utc) - timedelta(days=1))]
@@ -1211,20 +1236,18 @@ async def stock(ctx, *, identifier: str):
     
     stats_text = (
         f"```\n"
-        f"Current Price:    {current_price:,.2f} CC\n"
-        f"Today's Change:   {'+' if price_change >= 0 else ''}{price_change:,.2f} CC ({'+' if percent_change >= 0 else ''}{percent_change:.2f}%)\n"
-        f"All-Time High:    {all_time_high:,.2f} CC\n"
-        f"All-Time Low:     {all_time_low:,.2f} CC\n"
-        f"Market Cap:       {format_cc(market_cap)}\n"
+        f"Current Price:   {current_price:,.2f} CC\n"
+        f"Today's Change:  {'+' if price_change >= 0 else ''}{price_change:,.2f} CC ({'+' if percent_change >= 0 else ''}{percent_change:.2f}%)\n"
+        f"All-Time High:   {all_time_high:,.2f} CC\n"
+        f"All-Time Low:    {all_time_low:,.2f} CC\n"
+        f"Market Cap:      {format_cc(market_cap)}\n"
         f"```"
     )
     embed.add_field(name="📊 Key Statistics", value=stats_text, inline=False)
     
+    # ... (The rest of your command remains exactly the same)
     holders_text = "```\n"
     if not top_holders_df.empty:
-        # --- THIS IS THE FIX ---
-        # The loop is now structured correctly. 'i' gets the index, and 'holder'
-        # gets the entire row as a pandas Series object.
         for i, holder in top_holders_df.iterrows():
             holders_text += f"{i+1}. {holder['ingamename']:<15} {float(holder['shares_owned']):.2f} shares\n"
     else:
@@ -1560,6 +1583,29 @@ class LedgerPaginationView(discord.ui.View):
         self.details_cache = {}
         self.rebuild_view()
 
+    # --- NEW: SECURITY CHECK ADDED HERE ---
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # Check if the user clicking is the one who ran the /ledger command
+        if interaction.user != self.ctx.author:
+            # 1. Load your local GIF file
+            file = discord.File("gifs/thatsridiculous.gif", filename="thatsridiculous.gif")
+
+            # 2. Create the embed
+            embed = discord.Embed(
+                title="Hey! What do you think you're doing?",
+                description="This transaction ledger doesn't belong to you. FOR PRIVATE EYES ONLY!",
+                color=discord.Color.red()
+            )
+            
+            # 3. Tell the embed to use the attached file as its image
+            embed.set_image(url="attachment://thatsridiculous.gif")
+
+            # 4. Send the private message and block the button press
+            await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
+            return False
+        # If the check passes, allow the button press
+        return True
+
     def rebuild_view(self):
         """Clears and rebuilds the UI components for the current page."""
         self.clear_items()
@@ -1633,7 +1679,6 @@ class LedgerPaginationView(discord.ui.View):
         embed.set_footer(text=f"Page {self.current_page + 1} of {self.total_pages}")
         return embed
 
-    # --- THESE METHODS WERE MISSING ---
     async def prev_page(self, interaction: discord.Interaction):
         if self.current_page > 0:
             self.current_page -= 1
@@ -1665,13 +1710,34 @@ class LedgerPaginationView(discord.ui.View):
 
 # --- NEW: UI Class for Trade Confirmations ---
 class TradeConfirmationView(discord.ui.View):
-    def __init__(self, *, timeout=30, trade_details: dict):
+    # Add 'author' to the init method
+    def __init__(self, *, timeout=30, trade_details: dict, author: discord.User):
         super().__init__(timeout=timeout)
         self.trade_details = trade_details
         self.confirmed = None
+        self.author = author # Store the user who started the command
+
+    # Add an interaction check to make sure the right user is clicking
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user != self.author:
+            file = discord.File("gifs/Youcantdothat.gif", filename="Youcantdothat.gif")
+            
+            embed = discord.Embed(
+                title="Access Denied",
+                description="This isn't for you! Good try tho.",
+                color=discord.Color.red()
+            )
+            # Use the direct image link you just copied
+            embed.set_image(url="attachment://Youcantdothat.gif")
+            await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
+            return False
+        return True
+    
+    
 
     @discord.ui.button(label='Confirm Trade', style=discord.ButtonStyle.green)
     async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # The interaction_check will automatically run before this callback
         self.confirmed = True
         # Disable buttons to prevent double-clicking
         for item in self.children:
@@ -1682,6 +1748,7 @@ class TradeConfirmationView(discord.ui.View):
 
     @discord.ui.button(label='Cancel', style=discord.ButtonStyle.red)
     async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # The interaction_check will automatically run before this callback
         self.confirmed = False
         for item in self.children:
             item.disabled = True
@@ -1745,7 +1812,7 @@ async def invest(ctx, identifier: str, shares_str: str):
         'fee': broker_fee,
         'transaction_type': 'INVEST'
     }
-    view = TradeConfirmationView(trade_details=trade_details)
+    view = TradeConfirmationView(trade_details=trade_details, author=ctx.author)
     
     await ctx.send(embed=embed, view=view, ephemeral=True)
     await view.wait() # Wait for the user to click a button
@@ -1761,17 +1828,10 @@ async def invest(ctx, identifier: str, shares_str: str):
 
 @bot.command(name="sell")
 async def sell(ctx, identifier: str, shares_str: str):
-    """Sell a specific number of shares you own."""
-    try:
-        shares_to_sell = float(shares_str)
-        if shares_to_sell <= 0:
-            return await ctx.send("Please enter a positive number of shares to sell.", ephemeral=True)
-    except ValueError:
-        return await ctx.send("Invalid number of shares. Please enter a number (e.g., 10.5).", ephemeral=True)
-
+    """Sell a specific number of shares you own, or use 'all' to sell everything."""
     user_id = str(ctx.author.id)
 
-    # 1. Get Data
+    # --- 1. Get Stock and Portfolio Data ---
     stock = database.get_stock_by_ticker_or_name(identifier)
     if not stock:
         return await ctx.send(f"Could not find a stock for '{identifier}'.", ephemeral=True)
@@ -1779,24 +1839,40 @@ async def sell(ctx, identifier: str, shares_str: str):
     portfolio = database.get_portfolio_details(user_id)
     user_holding = portfolio[portfolio['stock_ingamename'] == stock['ingamename']]
     
-    if user_holding.empty or float(user_holding['shares_owned'].iloc[0]) < shares_to_sell:
-        shares_owned = 0 if user_holding.empty else float(user_holding['shares_owned'].iloc[0])
-        return await ctx.send(f"Insufficient shares. You are trying to sell {shares_to_sell:,.2f} but you only own {shares_owned:,.2f} of **{stock['ingamename']}**.", ephemeral=True)
+    if user_holding.empty:
+        return await ctx.send(f"You do not own any shares of **{stock['ingamename']}**.", ephemeral=True)
 
+    shares_owned = float(user_holding['shares_owned'].iloc[0])
+
+    # --- 2. Determine the amount to sell ---
+    shares_to_sell = 0.0
+    if shares_str.lower() == 'all':
+        shares_to_sell = shares_owned
+    else:
+        try:
+            shares_to_sell = float(shares_str)
+            if shares_to_sell <= 0:
+                return await ctx.send("Please enter a positive number of shares to sell.", ephemeral=True)
+        except ValueError:
+            return await ctx.send("Invalid amount. Please enter a number (e.g., 10.5) or the word 'all'.", ephemeral=True)
+
+    # --- 3. Validate the Amount ---
+    if shares_to_sell > shares_owned + 1e-9: # Add a tiny tolerance for floating point comparisons
+        return await ctx.send(f"Insufficient shares. You are trying to sell {shares_to_sell:,.4f} but you only own {shares_owned:,.4f} of **{stock['ingamename']}**.", ephemeral=True)
+
+    # --- 4. Calculate Trade Details ---
     balance = database.get_user_balance_by_discord_id(user_id)
-
-    # 2. Calculate Trade Details
     current_price = float(stock['current_price'])
     subtotal = shares_to_sell * current_price
     broker_fee = subtotal * 0.03
     total_proceeds = subtotal - broker_fee
 
-    # 3. Confirmation UI
+    # --- 5. Confirmation UI ---
     new_balance_preview = float(balance) + total_proceeds
     embed = discord.Embed(title="Trade Confirmation: SELL", color=discord.Color.red())
     details = (
         f"**Stock**: {stock['ingamename']} (${stock['ticker']})\n"
-        f"**Shares**: {shares_to_sell:,.2f}\n"
+        f"**Shares**: {shares_to_sell:,.4f}\n"
         f"**Price/Share**: {current_price:,.2f} CC\n"
         f"--------------------------\n"
         f"**Gross Proceeds**: {subtotal:,.2f} CC\n"
@@ -1810,27 +1886,27 @@ async def sell(ctx, identifier: str, shares_str: str):
 
     trade_details = {
         'actor_id': user_id,
-        'target_id': target_id, # Add target_id
+        'target_id': target_id,
         'stock_name': stock['ingamename'],
-        'shares': -shares_to_sell, # Selling removes shares
-        'price_per_share': current_price, # Add price_per_share
-        'total_cost': total_proceeds, # Proceeds are positive
+        'shares': -shares_to_sell,
+        'price_per_share': current_price,
+        'total_cost': total_proceeds,
         'fee': broker_fee,
         'transaction_type': 'SELL'
     }
-    view = TradeConfirmationView(trade_details=trade_details)
+    view = TradeConfirmationView(trade_details=trade_details, author=ctx.author)
 
     await ctx.send(embed=embed, view=view, ephemeral=True)
     await view.wait()
 
-    # 4. Execute Trade if Confirmed
+    # --- 6. Execute Trade if Confirmed ---
     if view.confirmed:
+        # This calls the robust, fixed function in database.py
         new_balance = database.execute_trade_transaction(**view.trade_details)
         if new_balance is not None:
-            await ctx.send(f"✅ **Trade Executed!** You sold {shares_to_sell:,.2f} shares of **{stock['ingamename']}**. Your new balance is {format_cc(new_balance)}.", ephemeral=True)
+            await ctx.send(f"✅ **Trade Executed!** You sold {shares_to_sell:,.4f} shares of **{stock['ingamename']}**. Your new balance is {format_cc(new_balance)}.", ephemeral=True)
         else:
-            # Changed from ctx.followup.send to ctx.send for prefix command compatibility.
-            await ctx.send("❌ **Trade Failed!** This could be due to a price change or insufficient funds. Please try again.", ephemeral=True)
+            await ctx.send("❌ **Trade Failed!** This could be due to insufficient shares or a database error. Please try again.", ephemeral=True)
         
 BOT_PERSONALITIES = {
     "StartingGateSally": {"type": "starter"},
