@@ -869,6 +869,103 @@ def get_financial_summary(discord_id: str) -> dict:
             
     return summary
 
+def get_earnings_history(discord_id: str, days: int) -> pd.DataFrame:
+    """
+    Fetches a user's earnings history (periodic earnings and dividends) for a
+    specified number of days.
+
+    Args:
+        discord_id: The user's Discord ID.
+        days: The number of past days to retrieve earnings for (e.g., 7 or 30).
+
+    Returns:
+        A pandas DataFrame containing the user's earnings history, sorted by
+        most recent first. Returns an empty DataFrame if no history is found.
+    """
+    conn = get_connection()
+    if not conn:
+        return pd.DataFrame()
+
+    # This query efficiently filters the transactions table for specific types
+    # within a given time window. An index on `actor_id` and `transaction_type`
+    # would further optimize performance for users with very large histories.
+    query = """
+        SELECT
+            timestamp,
+            transaction_type,
+            item_name,
+            cc_amount
+        FROM transactions
+        WHERE
+            actor_id = %s
+            AND transaction_type IN ('PERIODIC_EARNINGS', 'DIVIDEND')
+            AND timestamp >= NOW() - INTERVAL '%s days'
+        ORDER BY timestamp DESC;
+    """
+    df = pd.DataFrame()
+    try:
+        df = pd.read_sql(query, conn, params=(discord_id, days))
+    except (Exception, psycopg2.Error) as error:
+        logging.error(f"Error fetching earnings history for {discord_id}: {error}")
+    finally:
+        if conn is not None:
+            conn.close()
+    return df
+
+def get_transaction_ledger(discord_id: str) -> pd.DataFrame:
+    """
+    Retrieves a user's complete transaction history, calculating a running
+    balance for each entry at the database level for maximum efficiency.
+
+    Args:
+        discord_id: The user's Discord ID.
+
+    Returns:
+        A pandas DataFrame of the full transaction ledger, sorted chronologically.
+        Returns an empty DataFrame if the user has no transactions.
+    """
+    conn = get_connection()
+    if not conn:
+        return pd.DataFrame()
+
+    # The key to this query is the window function `SUM(cc_amount) OVER (...)`.
+    # It calculates the cumulative sum of `cc_amount` for each row in the result
+    # set, ordered by the timestamp. This offloads the complex and slow task of
+    # calculating a running balance from the Python application to the database,
+    # which is optimized for such set-based operations.
+    query = """
+        SELECT
+            transaction_id,
+            timestamp,
+            transaction_type,
+            item_name,
+            item_quantity,
+            cc_amount,
+            fee_paid,
+            details,
+            -- This window function is the most efficient way to get a running balance.
+            -- It sums the `cc_amount` of all transactions from the beginning up to the current row.
+            SUM(cc_amount) OVER (ORDER BY timestamp, transaction_id) AS running_balance
+        FROM transactions
+        WHERE actor_id = %s
+        ORDER BY timestamp DESC;
+    """
+    df = pd.DataFrame()
+    try:
+        df = pd.read_sql(query, conn, params=(discord_id,))
+        # The 'details' column is returned as a JSON string from the DB,
+        # so we convert it to a Python dict for easier handling in the bot.
+        # Errors='coerce' will turn any parsing errors into NaT/None.
+        if not df.empty and 'details' in df.columns:
+            df['details'] = df['details'].apply(lambda x: json.loads(x) if x else None)
+
+    except (Exception, psycopg2.Error) as error:
+        logging.error(f"Error fetching transaction ledger for {discord_id}: {error}")
+    finally:
+        if conn is not None:
+            conn.close()
+    return df
+
 
 ### Racing Gambling Game Functions ###
 
