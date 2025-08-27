@@ -47,6 +47,9 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
     if active_event_name == "Headwind on the Back Stretch":
         print("EVENT ACTIVE: Applying 'Headwind on the Back Stretch' modifier.")
         performance_yield_modifier = 0.5
+    elif active_event_name == "The Grand Derby":
+        print("EVENT ACTIVE: Applying 'The Grand Derby' earnings boost!")
+        performance_yield_modifier = 5.0
 
     latest_data = enriched_df.sort_values('timestamp').groupby('inGameName').tail(1)
     new_transaction_records = []
@@ -69,7 +72,7 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
         perf_flat_bonus = get_upgrade_value(shop_upgrades_df, discord_id, "Perfect the Starting Gate", 2, 3)
         tenure_multiplier = get_upgrade_value(shop_upgrades_df, discord_id, "Build Club Morale", 2.0, 0.2)
         
-        performance_yield = (perf_prestige + perf_flat_bonus) * perf_multiplier * performance_yield_modifier
+        performance_yield = (perf_prestige + perf_flat_bonus) * (perf_multiplier + performance_yield_modifier)
         tenure_yield = tenure_prestige * tenure_multiplier
         base_cc_earned = max(0, performance_yield + tenure_yield)
         

@@ -223,7 +223,7 @@ def generate_prestige_leaderboard(individual_log_df, last_updated_str, generated
     
     ax.set_xlabel('Total Prestige Points', fontsize=12, color='white')
     ax.set_ylabel('Member', fontsize=12, color='white')
-    ax.set_title(f'Prestige Leaderboard | Updated: {last_updated_str}', fontsize=18, weight='bold', loc='left', color='white')
+    ax.set_title(f'Prestige Leaderboard | Updated: {last_updated_str}', fontsize=18, weight='bold',x=0.20, y=1.01,color='white')
 
     ax.tick_params(axis='x', colors='white')
     ax.tick_params(axis='y', colors='white', labelsize=11)

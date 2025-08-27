@@ -78,8 +78,37 @@ def update_lag_index(market_state_df, run_timestamp):
 
 def clear_and_check_events(market_state_df, run_timestamp):
     """
-    This function is now disabled and acts as a pass-through, 
-    returning the state it was given without modification.
+    Manages manually triggered, timed events.
+    - Checks if an active event's end time has been reached.
+    - Automatically ends the event if the timer is up.
     """
-    print("Market event checking is currently disabled.")
-    return market_state_df, None # Return the original state and no announcement
+    print("--- Checking for Active Market Event ---")
+    market_state = market_state_df.set_index('state_name')['state_value']
+    announcement = None
+
+    active_event = str(market_state.get('active_event', 'None'))
+    
+    # This logic only runs if there is an event currently active.
+    if active_event not in ['None', 'nan']:
+        event_end_str = market_state.get('event_end_timestamp')
+        
+        # Check if the event has a valid end time.
+        if pd.notna(event_end_str) and event_end_str not in ['None', 'nan']:
+            event_end_time = pd.to_datetime(event_end_str).tz_convert('US/Central')
+            
+            # Compare the current run time to the event's scheduled end time.
+            if run_timestamp >= event_end_time:
+                announcement = f"**The '{active_event}' event has concluded!** The market is returning to normal operation."
+                print(f"EVENT EXPIRED: {active_event}")
+                
+                # Clear the event from the market state.
+                market_state['active_event'] = 'None'
+                market_state['event_end_timestamp'] = None
+        else:
+            # Failsafe: If an event is active but has no end time, clear it.
+            market_state['active_event'] = 'None'
+            market_state['event_end_timestamp'] = None
+
+    # Return the updated state and any announcement.
+    return market_state.reset_index().rename(columns={'index': 'state_name'}), announcement
+

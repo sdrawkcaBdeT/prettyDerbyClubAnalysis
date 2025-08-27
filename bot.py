@@ -609,8 +609,8 @@ async def register(ctx, *, inGameName: str):
     
     await ctx.send(f"✅ Success! Your Discord account has been linked to the in-game name: **{inGameName}**. You can now use personal commands like `/myprogress`.", ephemeral=True)
 
-# This defines a global 15-minute cooldown for the /refresh command
-cooldown = commands.CooldownMapping.from_cooldown(1, 900, commands.BucketType.guild)
+# This defines a global 30-minute cooldown for the /refresh command
+cooldown = commands.CooldownMapping.from_cooldown(1, 1800, commands.BucketType.guild)
 
 @bot.command(name="refresh")
 async def refresh(ctx):
@@ -1907,6 +1907,164 @@ async def sell(ctx, identifier: str, shares_str: str):
             await ctx.send(f"✅ **Trade Executed!** You sold {shares_to_sell:,.4f} shares of **{stock['ingamename']}**. Your new balance is {format_cc(new_balance)}.", ephemeral=True)
         else:
             await ctx.send("❌ **Trade Failed!** This could be due to insufficient shares or a database error. Please try again.", ephemeral=True)
+
+
+@bot.command(name="derbyleaderboard")
+async def derby_leaderboard(ctx):
+    """Displays the live leaderboard for the current Grand Derby event."""
+    
+    # Check if an event is actually active
+    market_state_df = pd.DataFrame(database.get_market_data_from_db()['market_state'])
+    if not market_state_df.empty:
+        market_state = market_state_df.set_index('state_name')['state_value']
+        active_event = str(market_state.get('active_event', 'None'))
+        if active_event != "The Grand Derby":
+            return await ctx.send("The Grand Derby is not currently active.", ephemeral=True)
+    else:
+        return await ctx.send("Could not retrieve market state.", ephemeral=True)
+
+    await ctx.send("`Fetching the latest Grand Derby leaderboard...`", ephemeral=True)
+
+    leaderboard_df = database.get_event_leaderboard_data()
+
+    if leaderboard_df.empty:
+        return await ctx.send("Could not generate the leaderboard. No data found or an error occurred.", ephemeral=True)
+
+    # --- Pagination and Embed Generation ---
+    items_per_page = 15
+    pages = [leaderboard_df.iloc[i:i + items_per_page] for i in range(0, len(leaderboard_df), items_per_page)]
+    if not pages: pages.append(pd.DataFrame())
+    total_pages = len(pages)
+    current_page = 0
+
+    async def generate_embed(page_num):
+        page_data = pages[page_num]
+        embed = discord.Embed(title="🏆 Grand Derby Live Leaderboard 🏆", color=discord.Color.gold())
+        
+        leaderboard_text = "```\n"
+        leaderboard_text += "{:<16} | {:<12} | {:<10} | {:<12} | {}\n".format("Name", "CC Gained", "Fans Gained", "Perf. Yield", "Stock Profit")
+        leaderboard_text += "-" * 75 + "\n"
+
+        for i, row in page_data.iterrows():
+            name = row['ingamename'][:15]
+            cc_gained = f"{row['cc_gained']:,.0f}"
+            fans_gained = f"{row['fans_gained']:,.0f}"
+            perf_yield = f"{row['performance_yield']:,.0f}"
+            stock_profit = f"{row['stock_profit']:,.0f}"
+            leaderboard_text += "{:<16} | {:<12} | {:<10} | {:<12} | {}\n".format(name, cc_gained, fans_gained, perf_yield, stock_profit)
+
+        leaderboard_text += "```"
+        embed.description = leaderboard_text
+        embed.set_footer(text=f"Page {page_num + 1} of {total_pages} | Sorted by Total CC Gained")
+        return embed
+
+    # Using your existing PaginationView class
+    initial_embed = await generate_embed(0)
+    view = PaginationView(ctx.interaction, generate_embed, total_pages)
+    await ctx.send(embed=initial_embed, view=view)
+
+# --- NEW: Manual Event Control Commands ---
+
+@bot.group(name="event", invoke_without_command=True)
+@commands.check(is_admin)
+async def event(ctx):
+    """Parent command for manually controlling market events."""
+    await ctx.send("Invalid event command. Use `/event start [hours]` or `/event stop`.", ephemeral=True)
+
+@event.command(name="start")
+@commands.check(is_admin)
+async def event_start(ctx, hours: int):
+    """(Admin Only) Manually starts the Grand Derby for a set number of hours."""
+    if hours <= 0:
+        await ctx.send("Duration must be a positive number of hours.", ephemeral=True)
+        return
+
+    # Use defer to let Discord know we're working on it.
+    await ctx.defer(ephemeral=True, thinking=True)
+
+    # Calculate the event's end time based on the current time and duration
+    run_timestamp = datetime.now(pytz.timezone('US/Central'))
+    end_time = run_timestamp + timedelta(hours=hours)
+
+    # Format the end time into a string that the analysis script can read
+    end_time_str = end_time.strftime('%Y-%m-%d %H:%M:%S%z')
+    formatted_end_time = f"{end_time_str[:-2]}:{end_time_str[-2:]}"
+
+    # --- Take Snapshot FIRST ---
+    snapshot_success = database.create_event_snapshot()
+    if not snapshot_success:
+        # Let the admin know the snapshot failed before stopping.
+        await ctx.followup.send("`ERROR: Failed to create the event leaderboard snapshot. The contest cannot be tracked. Aborting event start.`", ephemeral=True)
+        return
+        
+    # --- Set Event State in Database ---
+    database.update_market_state_value('active_event', 'The Grand Derby')
+    success = database.update_market_state_value('event_end_timestamp', formatted_end_time)
+
+    if success:
+        # Create a user-friendly Discord timestamp for the announcement
+        discord_timestamp = f"<t:{int(end_time.timestamp())}:R>" # Using :R for a relative countdown
+
+        # --- THIS IS THE PUBLIC ANNOUNCEMENT ---
+        # We find the fan-exchange channel to post the message publicly.
+        fan_exchange_channel = discord.utils.get(ctx.guild.channels, name=FAN_EXCHANGE_CHANNEL_NAME)
+        
+        announcement_text = (
+            f"**THE GRAND DERBY IS LIVE!**\n\n"
+            f"For the next **{hours} hours**, the market is in overdrive! The event will conclude {discord_timestamp}.\n\n"
+            f"**Amplified Earnings**: The Performance Yield multiplier is now **x5.0**!\n"
+            f"**Accelerated Prices**: The Baggins Index is now hyper-responsive, reacting to performance over the last **3 hours**!\n\n"
+            f"Let's rally some fans! Use `/derbyleaderboard` to track the contest!"
+        )
+
+        if fan_exchange_channel:
+            await fan_exchange_channel.send(announcement_text)
+            # Send a quiet confirmation back to the admin.
+            await ctx.followup.send(f"✅ Successfully started the Grand Derby in {fan_exchange_channel.mention}.", ephemeral=True)
+        else:
+            await ctx.followup.send(f"Could not find the `#{FAN_EXCHANGE_CHANNEL_NAME}` channel to post the announcement.", ephemeral=True)
+    else:
+        await ctx.followup.send("Failed to start the event. Could not update the market state.", ephemeral=True)
+
+@event.command(name="stop")
+@commands.check(is_admin)
+async def event_stop(ctx):
+    """(Admin Only) Stops the Grand Derby immediately."""
+    # To stop the event, we simply clear its name and end timestamp
+    database.update_market_state_value('active_event', 'None')
+    success = database.update_market_state_value('event_end_timestamp', 'None')
+
+    if success:
+        await ctx.send("Successfully stopped the active event. The market will return to normal on the next analysis cycle.", ephemeral=True)
+    else:
+        await ctx.send("Failed to stop the event in the database.", ephemeral=True)
+
+@event.error
+@event_start.error
+@event_stop.error
+async def event_command_error(ctx, error):
+    """Handles errors for the event command group, specifically for non-admins."""
+    if isinstance(error, commands.CheckFailure):
+        await ctx.send("You do not have permission to use this command.", ephemeral=True)
+    else:
+        await ctx.send(f"An unexpected error occurred: {error}", ephemeral=True)
+
+# ---------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         
 BOT_PERSONALITIES = {
     "StartingGateSally": {"type": "starter"},

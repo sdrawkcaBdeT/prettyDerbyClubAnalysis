@@ -31,23 +31,33 @@ def get_prestige_floor(prestige, random_init_factor):
 def get_lagged_average(enriched_df, member_name, market_state, run_timestamp, override_hours=None):
     """
     Calculates the rolling average fan gain from a time-lagged window.
+    'override_hours' forces a specific window and bypasses the market lag.
     """
     avg_hours = override_hours if override_hours is not None else 20
     
-    lag_options_str = market_state.get('lag_options', "[0]")
-    try:
-        lag_options = ast.literal_eval(lag_options_str)
-        if not (isinstance(lag_options, list) and all(isinstance(i, int) for i in lag_options)):
+    # --- THIS IS THE FIX ---
+    # We now check if an override is active. If it is, we set the lag to zero
+    # by using the current timestamp. Otherwise, we use the market state lag.
+    if override_hours is not None:
+        # Event is active: Use the current timestamp, which sets lag_days to 0.
+        end_of_window = run_timestamp
+    else:
+        # Normal operation: Calculate the end of the window using the market state lag.
+        lag_options_str = market_state.get('lag_options', "[0]")
+        try:
+            lag_options = ast.literal_eval(lag_options_str)
+            if not (isinstance(lag_options, list) and all(isinstance(i, int) for i in lag_options)):
+                lag_options = [0]
+        except (ValueError, SyntaxError):
             lag_options = [0]
-    except (ValueError, SyntaxError):
-        lag_options = [0]
-        
-    active_cursor = int(market_state.get('active_lag_cursor', 0))
-    if active_cursor >= len(lag_options):
-        active_cursor = 0
-        
-    lag_days = lag_options[active_cursor]
-    end_of_window = run_timestamp - timedelta(days=lag_days)
+            
+        active_cursor = int(market_state.get('active_lag_cursor', 0))
+        if active_cursor >= len(lag_options):
+            active_cursor = 0
+            
+        lag_days = lag_options[active_cursor]
+        end_of_window = run_timestamp - timedelta(days=lag_days)
+    # --- END OF FIX ---
 
     member_df = enriched_df[enriched_df['inGameName'] == member_name].copy()
     member_df['timestamp'] = pd.to_datetime(member_df['timestamp'])
@@ -198,7 +208,29 @@ def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
         
         prestige = member_latest_data['lifetimePrestige']
         prestige_floor = get_prestige_floor(prestige, random_factor)
-        nudged_floor = prestige_floor + nudge_bonus        
+        nudged_floor = prestige_floor + nudge_bonus 
+        
+        if active_event_name == "The Grand Derby":
+            # During the Derby, force a 3-hour rolling average with NO lag.
+            # We set lag_days to 0 manually in the function call.
+            lagged_avg_gain = get_lagged_average(enriched_df, name, market_state, run_timestamp, override_hours=3)
+            # By calling with override_hours, we also bypass the lag setting for the derby
+            end_of_window = run_timestamp
+            member_df = enriched_df[enriched_df['inGameName'] == name].copy()
+            member_df['timestamp'] = pd.to_datetime(member_df['timestamp'])
+            member_df = member_df.set_index('timestamp').sort_index()
+            historical_data = member_df[member_df.index <= end_of_window]
+            if not historical_data.empty:
+                rolling_avg_series = historical_data['fanGain'].rolling(f'3h').mean()
+                if not rolling_avg_series.empty and pd.notna(rolling_avg_series.iloc[-1]):
+                    lagged_avg_gain = rolling_avg_series.iloc[-1]
+                else:
+                    lagged_avg_gain = 0
+            else:
+                lagged_avg_gain = 0
+        else:
+            # Normal operation
+            lagged_avg_gain = get_lagged_average(enriched_df, name, market_state, run_timestamp)       
         
         lagged_avg_gain = get_lagged_average(enriched_df, name, market_state, run_timestamp)
         stochastic_jitter = np.random.normal(1.0, 0.08)

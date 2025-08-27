@@ -158,6 +158,30 @@ def create_market_tables():
                 REFERENCES stock_prices(ingamename)
         );
         """,
+        """
+        CREATE TABLE IF NOT EXISTS central_bank (
+            bank_id SERIAL PRIMARY KEY,
+            balance NUMERIC(20, 2) NOT NULL DEFAULT 0.00
+        );
+        """,        
+        # --- NEW: A simple ledger just for fees ---
+        """
+        CREATE TABLE IF NOT EXISTS fee_ledger (
+            fee_id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            transaction_type VARCHAR(50),
+            fee_amount NUMERIC(15, 2) NOT NULL
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS event_leaderboard_snapshots (
+            discord_id VARCHAR(255) PRIMARY KEY,
+            ingamename VARCHAR(255),
+            start_balance NUMERIC(15, 2),
+            start_fan_count BIGINT,
+            start_stock_value NUMERIC(15, 2)
+        );
+        """,
         # --- NEW: Create the market_state table ---
         """
         CREATE TABLE IF NOT EXISTS market_state (
@@ -793,11 +817,9 @@ def execute_trade_transaction(
 
     with conn.cursor() as cursor:
         try:
-            # 1. Lock and update CC balance (this logic is fine)
+            # 1. Lock and update CC balance
             cursor.execute("SELECT balance FROM balances WHERE discord_id = %s FOR UPDATE;", (actor_id,))
             wallet = cursor.fetchone()
-            # For sells, total_cost is positive (proceeds). For buys, it's negative.
-            # So for a buy, we check if the wallet has enough.
             if transaction_type == 'INVEST' and (not wallet or wallet[0] < -total_cost):
                 conn.rollback()
                 return None
@@ -805,9 +827,7 @@ def execute_trade_transaction(
             cursor.execute("UPDATE balances SET balance = balance + %s WHERE discord_id = %s RETURNING balance;", (total_cost, actor_id))
             new_balance = cursor.fetchone()[0]
 
-            # 2. Update portfolio with a conditional WHERE clause
-            # This is the key change to prevent double-selling at the code level.
-            # The query will only update the row if the final share count is >= 0.
+            # 2. Update portfolio
             update_portfolio_query = """
                 UPDATE portfolios
                 SET shares_owned = portfolios.shares_owned + %(shares)s
@@ -821,22 +841,18 @@ def execute_trade_transaction(
                 'stock_name': stock_name
             })
             
-            # If the above query affected 0 rows, it means the user didn't have enough shares.
             if cursor.rowcount == 0:
-                # We also need to handle the case for a new investor buying shares.
-                # If it's a buy (shares > 0), we can insert.
                 if shares > 0:
                     cursor.execute("""
                         INSERT INTO portfolios (investor_discord_id, stock_ingamename, shares_owned)
                         VALUES (%s, %s, %s)
                     """, (actor_id, stock_name, shares))
                 else:
-                    # If it was a sell and rowcount was 0, they had insufficient shares.
                     logging.error(f"Trade failed: Insufficient shares for {actor_id} to sell {stock_name}.")
                     conn.rollback()
                     return None
 
-            # 3. Log the transaction (this logic is fine)
+            # 3. Log the user-facing transaction
             details = json.dumps({
                 "price_per_share": round(price_per_share, 2),
                 "shares_transacted": round(shares, 4),
@@ -847,6 +863,18 @@ def execute_trade_transaction(
                 INSERT INTO transactions (actor_id, target_id, transaction_type, item_name, item_quantity, cc_amount, fee_paid, details, balance_after)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
             """, (actor_id, target_id, transaction_type, f"{stock_name}'s Stock", shares, total_cost, fee, details, new_balance))
+
+            # --- NEW: LOGIC TO HANDLE THE CENTRAL BANK FEE ---
+            if fee > 0:
+                # Add the fee to the central bank's balance
+                cursor.execute("UPDATE central_bank SET balance = balance + %s;", (fee,))
+
+                # Log the fee collection in the fee_ledger
+                cursor.execute(
+                    "INSERT INTO fee_ledger (transaction_type, fee_amount) VALUES (%s, %s);",
+                    (transaction_type, fee)
+                )
+            # --- END OF NEW LOGIC ---
 
             conn.commit()
             return new_balance
@@ -1301,6 +1329,148 @@ def get_transaction_ledger(discord_id: str) -> pd.DataFrame:
             conn.close()
     return df
 
+
+def create_event_snapshot():
+    """
+    Takes a snapshot of all users' current financial and fan data.
+    This function should be called at the start of an event.
+    """
+    conn = get_connection()
+    if not conn:
+        logging.error("SNAPSHOT FAILED: Cannot connect to DB.")
+        return False
+    
+    # This query calculates each user's current stock value and joins it
+    # with their balance and latest fan count to create a complete snapshot.
+    query = """
+    WITH CurrentStockValues AS (
+        SELECT
+            p.investor_discord_id,
+            SUM(p.shares_owned * s.current_price) AS current_stock_value
+        FROM portfolios p
+        JOIN stock_prices s ON p.stock_ingamename = s.ingamename
+        GROUP BY p.investor_discord_id
+    )
+    SELECT
+        b.discord_id,
+        b.ingamename,
+        b.balance,
+        COALESCE(csv.current_stock_value, 0) AS stock_value
+    FROM balances b
+    LEFT JOIN CurrentStockValues csv ON b.discord_id = csv.investor_discord_id;
+    """
+    
+    try:
+        with conn.cursor() as cursor:
+            # 1. Clear any old snapshot data
+            cursor.execute("TRUNCATE TABLE event_leaderboard_snapshots;")
+            logging.info("Cleared previous event leaderboard snapshots.")
+
+            # 2. Fetch the combined snapshot data
+            snapshot_df = pd.read_sql(query, conn)
+            
+            # 3. Get the latest fan count for each user from the CSV
+            # (This assumes fan data is not yet in the database)
+            fan_log_df = pd.read_csv('enriched_fan_log.csv')
+            fan_log_df['timestamp'] = pd.to_datetime(fan_log_df['timestamp'])
+            latest_fans = fan_log_df.loc[fan_log_df.groupby('inGameName')['timestamp'].idxmax()]
+            latest_fans = latest_fans[['inGameName', 'fanCount']]
+
+            # 4. Merge fan data into the main snapshot
+            snapshot_df = pd.merge(snapshot_df, latest_fans, left_on='ingamename', right_on='inGameName', how='left').fillna(0)
+
+            # 5. Insert the new snapshot data into the database
+            snapshot_tuples = [
+                (row['discord_id'], row['ingamename'], row['balance'], row['fanCount'], row['stock_value'])
+                for _, row in snapshot_df.iterrows()
+            ]
+            
+            psycopg2.extras.execute_values(
+                cursor,
+                """
+                INSERT INTO event_leaderboard_snapshots 
+                (discord_id, ingamename, start_balance, start_fan_count, start_stock_value) 
+                VALUES %s;
+                """,
+                snapshot_tuples
+            )
+            
+            conn.commit()
+            logging.info(f"Successfully created event snapshot for {len(snapshot_tuples)} users.")
+            return True
+
+    except (Exception, psycopg2.Error) as error:
+        logging.error(f"DATABASE ERROR during snapshot creation: {error}")
+        conn.rollback()
+        return False
+    finally:
+        if conn is not None:
+            conn.close()
+
+def get_event_leaderboard_data():
+    """
+    Calculates the live event leaderboard by comparing current stats
+    to the stored snapshot. Returns a pandas DataFrame.
+    """
+    conn = get_connection()
+    if not conn: return pd.DataFrame()
+
+    # This comprehensive query joins current data with the snapshot and calculates the deltas.
+    query = """
+    WITH CurrentStockValues AS (
+        SELECT
+            p.investor_discord_id,
+            SUM(p.shares_owned * s.current_price) AS current_stock_value
+        FROM portfolios p
+        JOIN stock_prices s ON p.stock_ingamename = s.ingamename
+        GROUP BY p.investor_discord_id
+    ),
+    CurrentData AS (
+        SELECT
+            b.discord_id,
+            b.balance AS current_balance,
+            COALESCE(csv.current_stock_value, 0) AS current_stock_value
+        FROM balances b
+        LEFT JOIN CurrentStockValues csv ON b.discord_id = csv.investor_discord_id
+    )
+    SELECT
+        s.ingamename,
+        -- CC Gained (Earnings + Stock Profit)
+        (c.current_balance - s.start_balance) + (c.current_stock_value - s.start_stock_value) AS cc_gained,
+        -- Stock Profit Only
+        (c.current_stock_value - s.start_stock_value) AS stock_profit,
+        s.start_fan_count -- We will calculate fan gain and performance yield in Python
+    FROM event_leaderboard_snapshots s
+    JOIN CurrentData c ON s.discord_id = c.discord_id;
+    """
+    try:
+        leaderboard_df = pd.read_sql(query, conn)
+        
+        # --- Python-side Calculations for CSV-based data ---
+        fan_log_df = pd.read_csv('enriched_fan_log.csv')
+        fan_log_df['timestamp'] = pd.to_datetime(fan_log_df['timestamp'])
+        latest_fans = fan_log_df.loc[fan_log_df.groupby('inGameName')['timestamp'].idxmax()]
+        
+        # Merge to get current fan count and calculate gain
+        leaderboard_df = pd.merge(leaderboard_df, latest_fans[['inGameName', 'fanCount']], left_on='ingamename', right_on='inGameName', how='left')
+        leaderboard_df['fans_gained'] = leaderboard_df['fanCount'] - leaderboard_df['start_fan_count']
+
+        # Calculate performance yield during the event
+        # NOTE: This is an estimation. For exact values, you would need to sum transaction details.
+        leaderboard_df['performance_yield'] = (leaderboard_df['fans_gained'] / 8333) * 1.75 * 5.0 # Base formula with x5 multiplier
+        
+        # Final cleanup and sorting
+        leaderboard_df = leaderboard_df[['ingamename', 'cc_gained', 'fans_gained', 'performance_yield', 'stock_profit']]
+        leaderboard_df.sort_values('cc_gained', ascending=False, inplace=True)
+
+    except (Exception, psycopg2.Error) as error:
+        logging.error(f"Error fetching event leaderboard data: {error}")
+        return pd.DataFrame()
+    finally:
+        if conn is not None:
+            conn.close()
+            
+    return leaderboard_df
 
 ### Racing Gambling Game Functions ###
 
