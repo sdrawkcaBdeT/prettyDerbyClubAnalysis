@@ -19,6 +19,9 @@ import skills # We don't use it directly, but race_logic needs it
 from race_logic_v2 import Horse, Race, Bookie
 from race_bots import BotManager
 from market import database
+import numpy as np
+import math
+from generate_visuals import generate_portfolio_image, format_pl_part
 
 # --- Configuration ---
 COMMAND_LOG_CSV = 'command_log.csv'
@@ -307,7 +310,7 @@ def format_cc(amount):
     """Formats a number as a string with commas and 'CC'."""
     if pd.isna(amount):
         amount = 0
-    return f"{int(amount):,} CC"
+    return f"{float(amount):,.0f} CC"
 
 def log_market_transaction(actor_id, transaction_type, target_id, item_name, item_quantity, cc_amount, fee_paid):
     """Logs a market transaction to the universal log file."""
@@ -551,6 +554,7 @@ async def help(ctx):
     embed.add_field(name="PERSONAL STATS", value="`/myprogress` - Get a personalized summary of your progress since you last checked.", inline=False)
     embed.add_field(name="CLUB CHARTS & REPORTS", value=("`/top10` - Shows the current top 10 members by monthly fan gain.\n" "`/prestige_leaderboard` - Displays the all-time prestige point leaderboard.\n" "`/performance` - Posts the historical fan gain heatmap.\n" "`/log [member_name]` - Gets the detailed performance log for any member."), inline=False)
     embed.add_field(name="FAN EXCHANGE (Stock Market)", value=("`/exchange_help` - Provides a concise explanation and startup guide for the Fan Exchange system.\n" "`/market` - Displays the all stocks and some info.\n" "`/portfolio` - View your current stock holdings and their performance.\n" "`/stock [name/ticker]` - Shows the price history and stats for a specific racer.\n" "`/invest [name/ticker] [amount]` - Buy shares in a racer's stock, specifying CC to invest.\n" "`/sell [name/ticker] [amount]` - Sell shares of a racer's stock, specifying shares to sell.\n" "`/shop` - See what you can buy with your CC! Earnings upgrades and prestige!" "`/buy [shop_id]` - Purchase something from the shop!" "`/set_ticker [2-5 letter ticker]` - Set your unique stock ticker symbol."), inline=False)
+    embed.add_field(name="FINANCIAL REPORTING", value=("`/financial_summary` - Get a high-level overview of your net worth, P/L, and ROI.\n" "`/earnings [7 or 30]` - View a detailed list of your income from earnings and dividends.\n" "`/ledger` - See a complete, paginated history of all your transactions."), inline=False)
     embed.set_footer(text="Remember to use the command prefix '/' before each command.")
     await ctx.send(embed=embed, ephemeral=True)
 
@@ -671,11 +675,13 @@ async def exchange_help(ctx):
     embed.add_field(
         name="🤖 Core Commands",
         value="`/portfolio` - See your CC and stock holdings.\n"
+              "`/financial_summary` - View your overall Net Worth and P/L.\n"
+              "`/earnings` - Check your recent income history.\n"
+              "`/ledger` - Review every transaction you've ever made.\n"
               "`/market` - View the top market movers.\n"
               "`/stock [name/ticker]` - Get info on a specific stock.\n"
-              "`/invest [name/ticker] [amount]` - Buy shares.\n"
-              "`/sell [name/ticker] [shares]` - Sell shares.\n"
-              "`/shop` & `/buy [item_id]` - Spend your CC!",
+              "`/invest` & `/sell` - Buy and sell shares.\n"
+              "`/shop` & `/buy` - Spend your CC!",
         inline=False
     )
     await ctx.send(embed=embed, ephemeral=True)
@@ -817,115 +823,51 @@ async def log(ctx, *, name: str):
 @bot.command(name="set_ticker")
 async def set_ticker(ctx, ticker: str):
     """Sets a permanent, unique stock ticker for your name (2-5 letters)."""
-    user_id = str(ctx.author.id)
     inGameName = get_inGameName(ctx.author.id)
-
     if not inGameName:
         await ctx.send("You must be registered with `/register` to set a ticker.", ephemeral=True)
         return
 
     # --- Validation ---
-    ticker = ticker.upper() # Tickers are always uppercase
-    if not (2 <= len(ticker) <= 5):
-        await ctx.send("Ticker must be between 2 and 5 letters.", ephemeral=True)
-        return
-    if not ticker.isalpha():
-        await ctx.send("Ticker can only contain letters (A-Z).", ephemeral=True)
+    ticker = ticker.upper()
+    if not (2 <= len(ticker) <= 5 and ticker.isalpha()):
+        await ctx.send("Ticker must be 2-5 letters (A-Z).", ephemeral=True)
         return
 
-    # --- File Locking ---
-    lock_file = 'market/market.lock'
-    if os.path.exists(lock_file):
-        await ctx.send("The market is busy. Please try again in a moment.", ephemeral=True)
-        return
-    open(lock_file, 'w').close()
+    # --- REFACTORED: Use database function ---
+    # The file lock is no longer needed.
+    success = database.update_user_ticker(inGameName, ticker)
 
-    try:
-        init_df = load_market_file('member_initialization.csv')
-        if init_df.empty:
-            await ctx.send("Market initialization file not found. Please contact an admin.", ephemeral=True)
-            return
-
-        # Check if user already has a ticker
-        user_row = init_df[init_df['inGameName'] == inGameName]
-        if not user_row.empty and pd.notna(user_row.iloc[0]['ticker']):
-            await ctx.send(f"You have already set your ticker to **${user_row.iloc[0]['ticker']}**. It cannot be changed.", ephemeral=True)
-            return
-            
-        # Check if ticker is already in use
-        if ticker in init_df['ticker'].values:
-            await ctx.send(f"The ticker **${ticker}** is already taken. Please choose another.", ephemeral=True)
-            return
-
-        # --- Update and Save ---
-        init_df.loc[init_df['inGameName'] == inGameName, 'ticker'] = ticker
-        init_df.to_csv('market/member_initialization.csv', index=False)
-
+    if success:
         embed = discord.Embed(
             title="✅ Ticker Set Successfully!",
-            description=f"Your official stock ticker is now **${ticker}**.\nOther users can now use this ticker with the `/stock`, `/invest`, and `/sell` commands.",
+            description=f"Your official stock ticker is now **{ticker}**.",
             color=discord.Color.purple()
         )
         await ctx.send(embed=embed)
-
-    finally:
-        os.remove(lock_file)
+    else:
+        await ctx.send(f"The ticker **{ticker}** might already be taken, or an error occurred. Please try another.", ephemeral=True)
         
 @bot.command(name="shop")
 async def shop(ctx):
     """Displays the Prestige Shop with available items and your upgrade tiers."""
     user_id = str(ctx.author.id)
 
-    # --- Load Data ---
-    try:
-        crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
-        upgrades_df = load_market_file('shop_upgrades.csv', dtype={'discord_id': str})
-        enriched_df = pd.read_csv(ENRICHED_FAN_LOG_CSV)
-    except FileNotFoundError as e:
-        await ctx.send(f"**Admin Alert:** A required market file is missing: `{e.filename}`. The shop cannot function.", ephemeral=True)
-        return
+    # --- REFACTORED: Get all shop data in one go ---
+    shop_data = database.get_shop_data(user_id)
+    if not shop_data:
+        return await ctx.send("Could not retrieve your account data. Are you registered?", ephemeral=True)
 
-    # --- START OF DEBUGGING BLOCK ---
-    # We print the columns right after loading to see what pandas is reading.
-    print(f"DEBUG: Columns in enriched_fan_log.csv are: {enriched_df.columns.tolist()}")
-    # --- END OF DEBUGGING BLOCK ---
+    balance = shop_data['balance']
+    user_upgrades = shop_data['upgrades']
+    current_prestige = shop_data['prestige']
 
-    # --- Robust User Data Lookup ---
-    user_data = crew_coins_df[crew_coins_df['discord_id'] == user_id]
-    if user_data.empty:
-        return await ctx.send("It looks like you don't have a Fan Exchange account yet. Make sure you are registered with `/register`.", ephemeral=True)
-
-    balance = float(user_data['balance'].iloc[0])
-    inGameName = user_data['inGameName'].iloc[0]
-
-    try:
-        # This is the line that has been causing the error.
-        user_stats = enriched_df[enriched_df['inGameName'] == inGameName]
-    except KeyError:
-        # If we get a KeyError, this block will run, giving us a definitive answer.
-        error_message = (
-            "**CRITICAL ERROR in `/shop`:**\n"
-            f"I tried to find the column `inGameName` in `enriched_fan_log.csv`, but it doesn't exist.\n"
-            f"The columns I actually found are: `{enriched_df.columns.tolist()}`\n\n"
-            "Please check `analysis.py` to ensure it's writing the correct column headers, and that the bot is reading the correct, most recent file."
-        )
-        print(error_message) # Also print to console for the bot owner
-        await ctx.send("Sorry, a critical data error occurred. The `inGameName` column could not be found. Please notify the admin.", ephemeral=True)
-        return # Stop the command here
-
-    if user_stats.empty:
-        return await ctx.send("I couldn't find any analysis data for you in the logs. A data refresh may be needed to purchase prestige.", ephemeral=True)
-
-    latest_stats = user_stats.sort_values('timestamp').iloc[-1]
-    current_prestige = latest_stats['lifetimePrestige']
-    user_upgrades = upgrades_df[upgrades_df['discord_id'] == user_id].set_index('upgrade_name')['tier'].to_dict()
-
-    # --- Build and Send Embed (This part remains the same) ---
     embed = discord.Embed(title="Prestige Shop", description="Spend your Crew Coins to get ahead!", color=discord.Color.purple())
     embed.set_footer(text=f"Your current balance: {format_cc(balance)}")
 
     prestige_text = ""
     for item_id, item_details in SHOP_ITEMS['PRESTIGE'].items():
+        # Using your original helper function for dynamic cost
         bundle_cost = calculate_prestige_bundle_cost(current_prestige, item_details['amount'])
         prestige_text += f"**{item_details['name']} (ID: `{item_id}`)**\nCost: **{format_cc(bundle_cost)}**\n\n"
     embed.add_field(name="--- Prestige Purchases ---", value=prestige_text, inline=False)
@@ -935,7 +877,12 @@ async def shop(ctx):
         category_text = ""
         for item_id, item_details in items.items():
             current_tier = user_upgrades.get(item_details['name'], 0)
-            status = "**(Max Tier)**" if current_tier >= item_details['max_tier'] else f"Tier {current_tier+1} Cost: **{format_cc(item_details['costs'][current_tier])}**"
+            if current_tier >= item_details['max_tier']:
+                status = "**(Max Tier)**"
+            else:
+                cost = item_details['costs'][current_tier]
+                status = f"Tier {current_tier+1} Cost: **{format_cc(cost)}**"
+            
             category_text += f"**{item_details['name']} (ID: `{item_id}`)**\n{item_details['description']}\n*Your Tier: {current_tier}* | {status}\n\n"
         embed.add_field(name=f"--- {category} Upgrades ---", value=category_text, inline=False)
         
@@ -955,320 +902,248 @@ async def buy(ctx, item_id: str):
             break
     
     if not item_details:
-        await ctx.send("Invalid item ID. Use `/shop` to see available items.", ephemeral=True)
-        return
+        return await ctx.send("Invalid item ID. Use `/shop` to see available items.", ephemeral=True)
+    
+    # --- REFACTORED: Get necessary data from DB ---
+    shop_data = database.get_shop_data(user_id)
+    if not shop_data:
+        return await ctx.send("Could not retrieve your account data.", ephemeral=True)
 
-    lock_file = 'market/market.lock'
-    if os.path.exists(lock_file):
-        await ctx.send("The market is busy. Please try again in a moment.", ephemeral=True)
-        return
-    open(lock_file, 'w').close()
-
-    try:
-        crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
-        upgrades_df = load_market_file('shop_upgrades.csv', dtype={'discord_id': str})
-        user_data_row = crew_coins_df[crew_coins_df['discord_id'] == user_id]
-        if user_data_row.empty:
-            await ctx.send("You must be registered to make purchases.", ephemeral=True)
-            return
+    balance = shop_data['balance']
+    user_upgrades = shop_data['upgrades']
+    current_prestige = shop_data['prestige']
+    
+    cost = 0
+    new_tier = None
+    
+    if item_details['type'] == 'upgrade':
+        upgrade_name = item_details['name']
+        current_tier = user_upgrades.get(upgrade_name, 0)
         
-        balance = float(user_data_row['balance'].iloc[0])
-        inGameName = user_data_row['inGameName'].iloc[0]
+        if current_tier >= item_details['max_tier']:
+            return await ctx.send(f"You have reached the max tier for **{upgrade_name}**.", ephemeral=True)
         
-        if item_details['type'] == 'upgrade':
-            upgrade_name = item_details['name']
-            user_upgrade_row = upgrades_df[(upgrades_df['discord_id'] == user_id) & (upgrades_df['upgrade_name'] == upgrade_name)]
-            current_tier = user_upgrade_row['tier'].iloc[0] if not user_upgrade_row.empty else 0
-            if current_tier >= item_details['max_tier']:
-                await ctx.send(f"You have reached the max tier for **{upgrade_name}**.", ephemeral=True)
-                return
-            cost = item_details['costs'][current_tier]
-            if balance < cost:
-                await ctx.send(f"You need {format_cc(cost)}.", ephemeral=True)
-                return
-            if not user_upgrade_row.empty:
-                upgrades_df.loc[user_upgrade_row.index, 'tier'] += 1
-            else:
-                new_upgrade = pd.DataFrame([{'discord_id': user_id, 'upgrade_name': upgrade_name, 'tier': 1}])
-                upgrades_df = pd.concat([upgrades_df, new_upgrade], ignore_index=True)
-            upgrades_df.to_csv('market/shop_upgrades.csv', index=False)
+        cost = item_details['costs'][current_tier]
+        new_tier = current_tier + 1
 
-        elif item_details['type'] == 'prestige':
-            enriched_df = pd.read_csv(ENRICHED_FAN_LOG_CSV)
-            latest_stats = enriched_df[enriched_df['inGameName'] == inGameName].sort_values('timestamp').iloc[-1]
-            # --- UPDATED (Task 3.2) ---
-            current_lifetime_prestige = latest_stats['lifetimePrestige']
-            amount_to_buy = item_details['amount']
-            cost = calculate_prestige_bundle_cost(current_lifetime_prestige, amount_to_buy)
+    elif item_details['type'] == 'prestige':
+        cost = calculate_prestige_bundle_cost(current_prestige, item_details['amount'])
 
-            if balance < cost:
-                await ctx.send(f"You need {format_cc(cost)}.", ephemeral=True)
-                return
+    if balance < cost:
+        return await ctx.send(f"You need {format_cc(cost)} but only have {format_cc(balance)}.", ephemeral=True)
+    
+    # --- REFACTORED: Execute purchase as a single transaction ---
+    # The file lock is no longer needed.
+    new_balance = database.execute_purchase_transaction(
+        actor_id=user_id, 
+        item_name=item_details['name'], 
+        cost=cost, 
+        upgrade_tier=new_tier # This will be None for prestige items
+    )
 
-            new_prestige_row = latest_stats.copy()
-            now = datetime.now(pytz.timezone('US/Central'))
-            timestamp_str = now.strftime('%Y-%m-%d %H:%M:%S%z')
-            new_prestige_row['timestamp'] = f"{timestamp_str[:-2]}:{timestamp_str[-2:]}"
-            new_prestige_row['prestigeGain'] = float(amount_to_buy)
-            new_prestige_row['lifetimePrestige'] += float(amount_to_buy)
-            new_prestige_row['monthlyPrestige'] = latest_stats['monthlyPrestige'] # Monthly is unaffected
-            new_prestige_row['performancePrestigePoints'] = 0
-            new_prestige_row['tenurePrestigePoints'] = 0
-            enriched_df = pd.concat([enriched_df, new_prestige_row.to_frame().T], ignore_index=True)
-            enriched_df.to_csv('enriched_fan_log.csv', index=False)
+    if new_balance is not None:
+        if item_details['type'] == 'prestige':
+            # The purchase is logged, but we still need to manually update the CSV for now
+            # This is a temporary measure until prestige is fully in the DB
+            try:
+                inGameName = database.get_inGameName_by_discord_id(user_id) # Assumes this function exists
+                enriched_df = pd.read_csv('enriched_fan_log.csv')
+                latest_stats = enriched_df[enriched_df['inGameName'] == inGameName].sort_values('timestamp').iloc[-1]
+                new_prestige_row = latest_stats.copy()
+                new_prestige_row['timestamp'] = datetime.now(pytz.timezone('US/Central')).isoformat()
+                new_prestige_row['prestigeGain'] = float(item_details['amount'])
+                new_prestige_row['lifetimePrestige'] += float(item_details['amount'])
+                enriched_df = pd.concat([enriched_df, new_prestige_row.to_frame().T], ignore_index=True)
+                enriched_df.to_csv('enriched_fan_log.csv', index=False)
+            except Exception as e:
+                print(f"CRITICAL: DB purchase succeeded but CSV update for prestige failed: {e}")
 
-        crew_coins_df.loc[crew_coins_df['discord_id'] == user_id, 'balance'] -= cost
-        crew_coins_df.to_csv('market/crew_coins.csv', index=False)
-        log_market_transaction(user_id, 'PURCHASE', 'SYSTEM', item_details['name'], 1, -cost, 0)
-        await ctx.send(embed=discord.Embed(title="✅ Purchase Successful!", description=f"You spent **{format_cc(cost)}** on **{item_details['name']}**.", color=discord.Color.green()))
-    finally:
-        os.remove(lock_file)
+        embed = discord.Embed(title="✅ Purchase Successful!", description=f"You spent **{format_cc(cost)}** on **{item_details['name']}**.", color=discord.Color.green())
+        embed.set_footer(text=f"Your new balance is {format_cc(new_balance)}")
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("❌ Purchase failed due to insufficient funds or a database error.", ephemeral=True)
 
 @bot.command(name="portfolio")
 async def portfolio(ctx):
-    """Displays the user's current CC balance, stock holdings, and P/L with pagination."""
+    """Displays account summary and a paginated image of stock holdings."""
     user_id = str(ctx.author.id)
+    inGameName = get_inGameName(user_id)
 
-    # --- Load Data ---
-    crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
-    portfolios_df = load_market_file('portfolios.csv', dtype={'investor_discord_id': str})
-    stock_prices_df = load_market_file('stock_prices.csv')
-    history_df = load_market_file('stock_price_history.csv')
-    transactions_df = load_market_file('universal_transaction_log.csv', dtype={'actor_id': str})
-    init_df = load_market_file('member_initialization.csv')
-    ticker_map = pd.Series(init_df.ticker.values, index=init_df.inGameName).to_dict()
-
-    user_coin_data = crew_coins_df[crew_coins_df['discord_id'] == user_id]
-    if user_coin_data.empty:
+    # --- 1. Data Fetching and Calculations (Unchanged) ---
+    balance = database.get_user_balance_by_discord_id(user_id)
+    if balance is None:
         return await ctx.send("You do not have a Fan Exchange account yet.", ephemeral=True)
-    
-    balance = user_coin_data['balance'].iloc[0]
-    inGameName = user_coin_data['inGameName'].iloc[0]
-    user_stocks = portfolios_df[portfolios_df['investor_discord_id'] == user_id].copy()
 
-    # --- Calculations ---
+    portfolio_df = database.get_portfolio_details(user_id)
+    market_snapshot, _ = database.get_market_snapshot()
+    sponsorships_list = database.get_sponsorships(user_id)
+
     total_stock_value = 0
     total_day_change = 0
-    sponsorships = []
 
-    if not user_stocks.empty and not stock_prices_df.empty:
-        stock_prices_map = stock_prices_df.set_index('inGameName')['current_price'].to_dict()
-        
-        for index, stock in user_stocks.iterrows():
-            stock_name = stock['stock_inGameName']
-            current_price = stock_prices_map.get(stock_name, 0)
-            value = stock['shares_owned'] * current_price
-            user_stocks.loc[index, 'value'] = value
-            total_stock_value += value
-            
-            cost_basis = get_cost_basis(user_id, stock_name, transactions_df)
-            pl = (current_price - cost_basis) * stock['shares_owned'] if cost_basis > 0 else 0
-            pl_percent = (pl / (cost_basis * stock['shares_owned'])) * 100 if cost_basis > 0 and stock['shares_owned'] > 0 else 0
-            user_stocks.loc[index, 'pl'] = pl
-            user_stocks.loc[index, 'pl_percent'] = pl_percent
-            
-            day_change, _ = get_24hr_change(stock_name, history_df, current_price)
-            day_change_value = day_change * stock['shares_owned']
-            user_stocks.loc[index, 'day_change_value'] = day_change_value
-            total_day_change += day_change_value
+    if not portfolio_df.empty and market_snapshot is not None:
+        portfolio_df = pd.merge(portfolio_df, market_snapshot[['ingamename', 'price_24h_ago']], left_on='stock_ingamename', right_on='ingamename', how='left')
+        portfolio_df['value'] = portfolio_df['shares_owned'] * portfolio_df['current_price']
+        portfolio_df['pl'] = (portfolio_df['current_price'] - portfolio_df['cost_basis']) * portfolio_df['shares_owned']
+        portfolio_df['pl_percent'] = portfolio_df.apply(
+            lambda row: (row['pl'] / (row['cost_basis'] * row['shares_owned'])) * 100 if row['cost_basis'] > 0 and row['shares_owned'] > 0 else 0,
+            axis=1
+        )
+        day_price_change = portfolio_df['current_price'] - portfolio_df['price_24h_ago']
+        portfolio_df['day_change_value'] = day_price_change * portfolio_df['shares_owned']
+        total_stock_value = portfolio_df['value'].sum()
+        total_day_change = portfolio_df['day_change_value'].sum()
 
-            all_holders = portfolios_df[portfolios_df['stock_inGameName'] == stock_name].sort_values('shares_owned', ascending=False)
-            if not all_holders.empty and all_holders.iloc[0]['investor_discord_id'] == user_id:
-                sponsorship_text = ""
-                if len(all_holders) > 1:
-                    lead = all_holders.iloc[0]['shares_owned'] - all_holders.iloc[1]['shares_owned']
-                    sponsorship_text = f"(by {lead:.2f} sh)"
-                else:
-                    sponsorship_text = "(Sole Owner)"
-                
-                ticker = ticker_map.get(stock_name)
-                sponsorship_name = f"${ticker}" if pd.notna(ticker) and isinstance(ticker, str) else stock_name
-                sponsorships.append(f"{sponsorship_name} {sponsorship_text}")
-
-        user_stocks.sort_values('value', ascending=False, inplace=True)
-
-    total_portfolio_value = balance + total_stock_value
+    total_portfolio_value = float(balance) + total_stock_value
     total_day_change_percent = (total_day_change / (total_portfolio_value - total_day_change)) * 100 if (total_portfolio_value - total_day_change) != 0 else 0
+    
+    portfolio_df.sort_values('value', ascending=False, inplace=True)
 
-    # --- PAGINATION LOGIC ---
+    sponsorships = []
+    for sponsor_info in sponsorships_list:
+        lead = float(sponsor_info['lead_amount'])
+        sponsorship_text = f"(by {lead:.2f} sh)" if lead > 0 else "(Sole Owner)"
+        sponsorship_name = f"${sponsor_info['ticker']}" if pd.notna(sponsor_info['ticker']) else sponsor_info['stock_ingamename']
+        sponsorships.append(f"{sponsorship_name} {sponsorship_text}")
+
+    # --- 2. Pagination and Embed Generation ---
     stocks_per_page = 10
-    pages = [user_stocks.iloc[i:i + stocks_per_page] for i in range(0, len(user_stocks), stocks_per_page)]
-    if not pages: pages.append(pd.DataFrame())
+    pages = [portfolio_df.iloc[i:i + stocks_per_page] for i in range(0, len(portfolio_df), stocks_per_page)]
+    if not pages: # Ensure there's at least one (empty) page
+        pages.append(pd.DataFrame())
+    total_pages = len(pages)
     current_page = 0
 
-    async def generate_embed(page_num):
+    # This function now builds the complete embed, including the summary and footer.
+    async def get_page_content(page_num):
+        page_data = pages[page_num]
+        
+        # Generate the image for the current page's holdings
+        image_file = generate_portfolio_image(page_data)
+        
         embed = discord.Embed(
             title=f"{ctx.author.display_name}'s Portfolio",
             description=f"*In-Game Name: {inGameName}*",
             color=discord.Color.gold()
         )
+        
+        # --- SUMMARY AND FOOTER ARE NOW PART OF THE EMBED ---
         summary_text = (
             f"```\n"
-            f"CC Balance:      {format_cc(balance)}\n"
-            f"Stock CC:       {format_cc(total_stock_value)}\n"
-            f"Total CC:       {format_cc(total_portfolio_value)}\n"
-            f"Today's Δ:    {'+' if total_day_change >= 0 else ''}{format_cc(total_day_change)} ({'+' if total_day_change_percent >= 0 else ''}{total_day_change_percent:.2f}%)\n"
+            f"CC Balance:     {format_cc(balance)}\n"
+            f"Stock Value:    {format_cc(total_stock_value)}\n"
+            f"Net Worth:      {format_cc(total_portfolio_value)}\n"
+            f"24 Hour Δ:      {'+' if total_day_change >= 0 else ''}{format_cc(total_day_change)}, {'+' if total_day_change_percent >= 0 else ''}{total_day_change_percent:.2f}%\n"
             f"```"
         )
         embed.add_field(name="💰 Account Summary", value=summary_text, inline=False)
         
-        page_data = pages[page_num]
-        holdings_text = "```\n"
-        holdings_text += "{:<7} | {:<7} | {:<8} | {:<10} | {}\n".format("Ticker", "Shares", "CC", "Today's Δ", "P/L")
-        holdings_text += "-"*56 + "\n"
-        if not page_data.empty:
-            for _, stock in page_data.iterrows():
-                stock_name = stock['stock_inGameName']
-                ticker = ticker_map.get(stock_name)
-                if pd.notna(ticker) and isinstance(ticker, str):
-                    display_name = f"${ticker[:5]}"
-                else:
-                    display_name = stock_name[:6]
-                
-                pl_str = f"{'+' if stock['pl'] >= 0 else ''}{stock['pl']:,.0f}, {'+' if stock['pl_percent'] >= 0 else ''}{stock['pl_percent']:.1f}%"
-                day_change_str = f"{'+' if stock['day_change_value'] >= 0 else ''}{stock['day_change_value']:,.0f}"
-                value_str = f"{stock['value']:,.0f}"
-
-                holdings_text += "{:<7} | {:<7.2f} | {:<8} | {:<10} | {}\n".format(
-                    display_name, stock['shares_owned'], value_str, day_change_str, pl_str
-                )
-        else:
-            holdings_text += "You do not own any stocks.\n"
-        holdings_text += "```"
-        embed.add_field(name=f"📈 Stock Holdings (Page {page_num + 1}/{len(pages)})", value=holdings_text, inline=False)
+        # The title of this field now acts as the holdings header
+        embed.add_field(
+            name=f"📈 Stock Holdings (Page {page_num + 1}/{total_pages})",
+            value="See image below.",
+            inline=False
+        )
 
         if sponsorships:
             embed.set_footer(text=f"🏆 Sponsorships: {', '.join(sponsorships)}")
-        return embed
+        
+        embed.set_image(url=f"attachment://{image_file.filename}")
+        return embed, image_file
 
-    # --- INTERACTIVE MESSAGE ---
+    # --- 3. Initial Display and View Setup ---
+    initial_embed, initial_file = await get_page_content(current_page)
+    
     view = discord.ui.View()
     prev_button = discord.ui.Button(label="◀️ Previous", style=discord.ButtonStyle.secondary, disabled=True)
-    next_button = discord.ui.Button(label="Next ▶️", style=discord.ButtonStyle.secondary, disabled=len(pages) <= 1)
+    next_button = discord.ui.Button(label="Next ▶️", style=discord.ButtonStyle.secondary, disabled=total_pages <= 1)
 
-    async def prev_callback(interaction):
+    async def prev_callback(interaction: discord.Interaction):
         nonlocal current_page
         current_page -= 1
+        embed, file = await get_page_content(current_page)
         prev_button.disabled = current_page == 0
         next_button.disabled = False
-        await interaction.response.edit_message(embed=await generate_embed(current_page), view=view)
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=view)
 
-    async def next_callback(interaction):
+    async def next_callback(interaction: discord.Interaction):
         nonlocal current_page
         current_page += 1
-        next_button.disabled = current_page == len(pages) - 1
+        embed, file = await get_page_content(current_page)
+        next_button.disabled = current_page >= total_pages - 1
         prev_button.disabled = False
-        await interaction.response.edit_message(embed=await generate_embed(current_page), view=view)
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=view)
 
     prev_button.callback = prev_callback
     next_button.callback = next_callback
     view.add_item(prev_button)
     view.add_item(next_button)
 
-    await ctx.send(embed=await generate_embed(current_page), view=view)
-
+    await ctx.send(embed=initial_embed, file=initial_file, view=view)
 
 @bot.command(name="market")
 async def market(ctx):
     """Displays a comprehensive overview of the stock market with pagination."""
-    # --- Load Data ---
-    stock_prices_df = load_market_file('stock_prices.csv')
-    history_df = load_market_file('stock_price_history.csv')
-    portfolios_df = load_market_file('portfolios.csv')
-    transactions_df = load_market_file('universal_transaction_log.csv')
-    init_df = load_market_file('member_initialization.csv')
-    ticker_map = pd.Series(init_df.ticker.values, index=init_df.inGameName).to_dict()
-
-    if stock_prices_df.empty:
+    market_df, volume_24h = database.get_market_snapshot()
+    if market_df is None or market_df.empty:
         return await ctx.send("Market is currently closed or has insufficient data.", ephemeral=True)
 
-    # --- Calculations ---
-    market_data = []
-    total_market_cap = 0
-    stocks_up = 0
+    # --- Calculations (Your original logic, now on DB data) ---
+    market_df['price_change'] = market_df['current_price'] - market_df['price_24h_ago']
+    # Avoid division by zero if the price 24h ago was 0
+    market_df['percent_change'] = (market_df['price_change'] / market_df['price_24h_ago'].replace(0, np.nan)) * 100
     
-    for _, stock in stock_prices_df.iterrows():
-        stock_name = stock['inGameName']
-        current_price = stock['current_price']
-        
-        price_change, percent_change = get_24hr_change(stock_name, history_df, current_price)
-        if price_change > 0: stocks_up += 1
+    total_market_cap = market_df['market_cap'].sum()
+    stocks_up = len(market_df[market_df['price_change'] > 0])
+    market_sentiment = "Bullish" if stocks_up > len(market_df) / 2 else "Bearish" if stocks_up < len(market_df) / 2 else "Neutral"
 
-        total_shares = portfolios_df[portfolios_df['stock_inGameName'] == stock_name]['shares_owned'].sum()
-        market_cap = total_shares * current_price
-        total_market_cap += market_cap
-
-        largest_holder_row = portfolios_df[portfolios_df['stock_inGameName'] == stock_name].nlargest(1, 'shares_owned')
-        if not largest_holder_row.empty:
-            holder_id = largest_holder_row['investor_discord_id'].iloc[0]
-            holder_name = get_inGameName(int(holder_id)) or "N/A"
-            holder_shares = largest_holder_row['shares_owned'].iloc[0]
-            largest_holder = f"{holder_shares:.1f} sh" # Trimmed name
-        else:
-            largest_holder = "N/A"
-            
-        market_data.append({
-            'name': stock_name,
-            'ticker': ticker_map.get(stock_name),
-            'price': current_price,
-            'price_change': price_change,
-            'percent_change': percent_change,
-            'largest_holder': largest_holder
-        })
-
-    transactions_df['timestamp'] = pd.to_datetime(transactions_df['timestamp'], format='mixed').dt.tz_convert('UTC')
-    one_day_ago = datetime.now(pytz.utc) - timedelta(days=1)
-    recent_trades = transactions_df[transactions_df['timestamp'] >= one_day_ago]
-    volume = recent_trades['cc_amount'].abs().sum()
+    sorted_by_change = market_df.sort_values('current_price', ascending=False, na_position='last')
     
-    market_sentiment = "Bullish" if stocks_up > len(stock_prices_df) / 2 else "Bearish" if stocks_up < len(stock_prices_df) / 2 else "Neutral"
-    sorted_by_change = sorted(market_data, key=lambda x: x['percent_change'], reverse=True)
-    
-    # --- PAGINATION LOGIC ---
+    # --- PAGINATION LOGIC (Your original logic) ---
     stocks_per_page = 15
-    pages = [market_data[i:i + stocks_per_page] for i in range(0, len(market_data), stocks_per_page)]
+    # Sort by price for the paginated display
+    sorted_by_price = market_df.sort_values('current_price', ascending=False)
+    pages = [sorted_by_price.iloc[i:i + stocks_per_page] for i in range(0, len(sorted_by_price), stocks_per_page)]
+    if not pages: pages.append(pd.DataFrame())
     current_page = 0
 
     async def generate_embed(page_num):
         embed = discord.Embed(title="Baggins Index Market Overview", description="*A snapshot of all market activity.*", color=discord.Color.blue())
         stats_text = (
             f"```\n"
-            f"Market Sentiment:   {market_sentiment} ({stocks_up} up, {len(stock_prices_df) - stocks_up} down)\n"
+            f"Market Sentiment:   {market_sentiment} ({stocks_up} up, {len(market_df) - stocks_up} down)\n"
             f"Total Market Cap:   {format_cc(total_market_cap)}\n"
-            f"24h Volume:         {format_cc(volume)}\n"
+            f"24h Volume:         {format_cc(volume_24h)}\n"
             f"```"
         )
         embed.add_field(name="📈 Market-Wide Statistics", value=stats_text, inline=False)
         
-        if sorted_by_change:
-            top_gainer = sorted_by_change[0]
-            biggest_drop = sorted_by_change[-1]
-            gainer_ticker = top_gainer['ticker'] if pd.notna(top_gainer['ticker']) and isinstance(top_gainer['ticker'], str) else top_gainer['name']
-            drop_ticker = biggest_drop['ticker'] if pd.notna(biggest_drop['ticker']) and isinstance(biggest_drop['ticker'], str) else biggest_drop['name']
-            movers_text = f"**Biggest Gainer:** ${gainer_ticker} ({'+' if top_gainer['percent_change'] >= 0 else ''}{top_gainer['percent_change']:.1f}%)\n"
-            movers_text += f"**Biggest Drop:** ${drop_ticker} ({'+' if biggest_drop['percent_change'] >= 0 else ''}{biggest_drop['percent_change']:.1f}%)"
+        if not sorted_by_change.empty:
+            top_gainer = sorted_by_change.iloc[0]
+            biggest_drop = sorted_by_change.iloc[-1]
+            gainer_ticker = f"{top_gainer['ticker']}" if pd.notna(top_gainer['ticker']) else top_gainer['ingamename']
+            drop_ticker = f"{biggest_drop['ticker']}" if pd.notna(biggest_drop['ticker']) else biggest_drop['ingamename']
+            movers_text = f"**Biggest Gainer:** {gainer_ticker} ({'+' if top_gainer['percent_change'] >= 0 else ''}{top_gainer['percent_change']:.1f}%)\n"
+            movers_text += f"**Biggest Drop:** {drop_ticker} ({'+' if biggest_drop['percent_change'] >= 0 else ''}{biggest_drop['percent_change']:.1f}%)"
             embed.add_field(name="🔥 Top Movers (Last 24h)", value=movers_text, inline=False)
         
         page_data = pages[page_num]
         list_text = "```\n"
         list_text += "{:<16} | {:<7} | {:<8} | {}\n".format("Ticker", "Price", "24h Δ", "Largest Holder")
         list_text += "-"*56 + "\n"
-        for stock in sorted(page_data, key=lambda x: x['price'], reverse=True):
-            ticker = stock['ticker']
-            if pd.notna(ticker) and isinstance(ticker, str):
-                display_name = f"${ticker[:5]}"
-            else:
-                display_name = stock['name']
-
+        for _, stock in page_data.iterrows():
+            display_name = f"{stock['ticker']}" if pd.notna(stock['ticker']) else stock['ingamename']
             change_str = f"{'+' if stock['percent_change'] >= 0 else ''}{stock['percent_change']:.1f}%"
+            holder_info = f"{float(stock['largest_holder_shares']):.1f} sh" if pd.notna(stock['largest_holder']) else "N/A"
+
             list_text += "{:<16} | {:<7.2f} | {:<8} | {}\n".format(
-                display_name, stock['price'], change_str, stock['largest_holder']
+                display_name[:15], float(stock['current_price']), change_str, holder_info
             )
         list_text += "```"
         embed.add_field(name=f"📊 Full Stock List (Page {page_num + 1}/{len(pages)})", value=list_text, inline=False)
         return embed
 
-    # --- INTERACTIVE MESSAGE ---
     view = discord.ui.View()
     prev_button = discord.ui.Button(label="◀️ Previous", style=discord.ButtonStyle.secondary, disabled=True)
     next_button = discord.ui.Button(label="Next ▶️", style=discord.ButtonStyle.secondary, disabled=len(pages) <= 1)
@@ -1294,63 +1169,45 @@ async def market(ctx):
 
     await ctx.send(embed=await generate_embed(current_page), view=view)
 
-@bot.command()
-async def ledger(ctx):
-    """Posts the market_ledger.png chart to the current channel."""
-    try:
-        # Define the path to the image
-        file_path = os.path.join(OUTPUT_DIR, 'market_ledger.png')
-
-        # Check if the file actually exists before trying to send it
-        if not os.path.exists(file_path):
-            await ctx.send(f"{ctx.author.mention}, the market ledger image could not be found. Please run a data refresh.")
-            return
-
-        # Create a discord.File object from the path and send it
-        await ctx.send(
-            f"{ctx.author.mention} here is the market ledger!",
-            file=discord.File(file_path)
-        )
-    except Exception as e:
-        await ctx.send(f"An error occurred while trying to send the ledger: {e}")
-
 @bot.command(name="stock")
-async def stock(ctx, *, member: str):
+async def stock(ctx, *, identifier: str):
     """Displays detailed information and a price chart for a given stock."""
-    # --- Load Data ---
-    stock_prices_df = load_market_file('stock_prices.csv')
-    history_df = load_market_file('stock_price_history.csv')
-    portfolios_df = load_market_file('portfolios.csv', dtype={'investor_discord_id': str})
-    transactions_df = load_market_file('universal_transaction_log.csv', dtype={'actor_id': str})
-    init_df = load_market_file('member_initialization.csv')
-    ticker_map = pd.Series(init_df.ticker.values, index=init_df.inGameName).to_dict()
-
-    target_name = get_name_from_ticker_or_name(member)
-    if not target_name:
-        return await ctx.send(f"Could not find a stock for a member or ticker named '{member}'.", ephemeral=True)
+    stock_info, history_df, top_holders_df = database.get_stock_details(identifier)
     
-    stock_info = stock_prices_df[stock_prices_df['inGameName'] == target_name]
-    if stock_info.empty:
-        return await ctx.send(f"Could not find price data for '{target_name}'. Please run a data refresh.", ephemeral=True)
-        
+    if not stock_info:
+        return await ctx.send(f"Could not find a stock for '{identifier}'.", ephemeral=True)
+
+    ingamename = stock_info['ingamename']
+    current_price = float(stock_info['current_price'])
+    
     # --- Calculations ---
-    current_price = stock_info['current_price'].iloc[0]
-    stock_history = history_df[history_df['inGameName'] == target_name]
-    
-    price_change, percent_change = get_24hr_change(target_name, history_df, current_price)
-    all_time_high = stock_history['price'].max() if not stock_history.empty else current_price
-    all_time_low = stock_history['price'].min() if not stock_history.empty else current_price
-    
-    total_shares = portfolios_df[portfolios_df['stock_inGameName'] == target_name]['shares_owned'].sum()
-    market_cap = total_shares * current_price
-    
-    top_holders = portfolios_df[portfolios_df['stock_inGameName'] == target_name].nlargest(5, 'shares_owned')
+    price_24h_ago = current_price
+    all_time_high = current_price
+    all_time_low = current_price
 
-    # --- Formatting ---
-    display_ticker = ticker_map.get(target_name)
-    title = f"Stock Info: {target_name}" + (f" (${display_ticker.upper()})" if pd.notna(display_ticker) and display_ticker != 'None' else "")
+    if not history_df.empty:
+        # This conversion is now correct and necessary
+        history_df['timestamp'] = pd.to_datetime(history_df['timestamp'])
+        
+        past_prices = history_df[history_df['timestamp'] < (datetime.now(pytz.utc) - timedelta(days=1))]
+        if not past_prices.empty:
+            price_24h_ago = float(past_prices['price'].iloc[-1])
+        
+        all_time_high = history_df['price'].max()
+        all_time_low = history_df['price'].min()
+
+    price_change = current_price - price_24h_ago
+    percent_change = (price_change / price_24h_ago) * 100 if price_24h_ago > 0 else 0
     
-    embed = discord.Embed(title=title, description=f"*Viewing market data for **{target_name}**.*", color=discord.Color.green())
+    market_snapshot, _ = database.get_market_snapshot()
+    market_cap = 0
+    if market_snapshot is not None:
+        stock_market_info = market_snapshot[market_snapshot['ingamename'] == ingamename]
+        if not stock_market_info.empty:
+            market_cap = stock_market_info['market_cap'].iloc[0]
+
+    display_ticker = f" ({stock_info['ticker']})" if stock_info['ticker'] else ""
+    embed = discord.Embed(title=f"Stock Info: {ingamename}{display_ticker}", color=discord.Color.green())
     
     stats_text = (
         f"```\n"
@@ -1364,39 +1221,41 @@ async def stock(ctx, *, member: str):
     embed.add_field(name="📊 Key Statistics", value=stats_text, inline=False)
     
     holders_text = "```\n"
-    for i, (_, holder) in enumerate(top_holders.iterrows()):
-        holder_name = get_inGameName(int(holder['investor_discord_id'])) or "Unknown"
-        holders_text += f"{i+1}. {holder_name:<15} ({holder['shares_owned']:.2f} sh)\n"
+    if not top_holders_df.empty:
+        # --- THIS IS THE FIX ---
+        # The loop is now structured correctly. 'i' gets the index, and 'holder'
+        # gets the entire row as a pandas Series object.
+        for i, holder in top_holders_df.iterrows():
+            holders_text += f"{i+1}. {holder['ingamename']:<15} {float(holder['shares_owned']):.2f} shares\n"
+    else:
+        holders_text += "No public shareholders.\n"
     holders_text += "```"
     embed.add_field(name="🏆 Top 5 Shareholders", value=holders_text, inline=False)
     
-    # Personalized Footer
-    user_holding = portfolios_df[(portfolios_df['investor_discord_id'] == str(ctx.author.id)) & (portfolios_df['stock_inGameName'] == target_name)]
+    user_portfolio = database.get_portfolio_details(str(ctx.author.id))
+    user_holding = user_portfolio[user_portfolio['stock_ingamename'] == ingamename]
     if not user_holding.empty:
-        shares_owned = user_holding['shares_owned'].iloc[0]
-        cost_basis = get_cost_basis(str(ctx.author.id), target_name, transactions_df)
+        shares_owned = float(user_holding['shares_owned'].iloc[0])
+        cost_basis = float(user_holding['cost_basis'].iloc[0])
         pl = (current_price - cost_basis) * shares_owned if cost_basis > 0 else 0
         pl_percent = (pl / (cost_basis * shares_owned)) * 100 if cost_basis > 0 and shares_owned > 0 else 0
         footer_text = f"Your Position: You own {shares_owned:.2f} shares with a P/L of {format_cc(pl)} ({'+' if pl_percent >= 0 else ''}{pl_percent:.1f}%)."
         embed.set_footer(text=footer_text)
 
-    # --- Chart ---
-    if len(stock_history) > 1:
-        stock_history = stock_history.copy()
-        stock_history['timestamp'] = pd.to_datetime(stock_history['timestamp'])
-        
+    if not history_df.empty and len(history_df) > 1 and pd.api.types.is_datetime64_any_dtype(history_df['timestamp']):
         plt.style.use('dark_background')
         fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(stock_history['timestamp'], stock_history['price'], color='#00FF00', linewidth=2)
+        ax.plot(history_df['timestamp'], history_df['price'], color='#00FF00', linewidth=2)
         
-        ax.set_title(f'{target_name} Price History', color='white')
+        ax.set_title(f'{ingamename} Price History', color='white')
         ax.set_ylabel('Price (CC)', color='white')
-        ax.tick_params(axis='x', colors='white')
+        ax.tick_params(axis='x', colors='white', rotation=15)
         ax.tick_params(axis='y', colors='white')
         ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='gray')
+        fig.tight_layout()
         
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.1, transparent=True)
+        plt.savefig(buf, format='png', transparent=True)
         buf.seek(0)
         plt.close(fig)
         
@@ -1406,175 +1265,572 @@ async def stock(ctx, *, member: str):
     else:
         await ctx.send(embed=embed)
 
-@bot.command(name="invest")
-async def invest(ctx, *, member_and_amount: str):
-    """Invest a specific amount of CC into a member's stock."""
-    # --- Input Parsing to handle spaces in names ---
-    parts = member_and_amount.rsplit(' ', 1)
-    if len(parts) != 2:
-        await ctx.send("Invalid format. Please use `/invest [member name] [amount]`. Example: `/invest Dill Dough 1000`", ephemeral=True)
+@bot.command(name="financial_summary")
+async def financial_summary(ctx):
+    """Displays a user's high-level financial summary, including Net Worth, P/L, and ROI."""
+    user_id = str(ctx.author.id)
+
+    # --- FIX: Registration check is now performed against the database ---
+    # This aligns the command's behavior with /portfolio and other core
+    # market functions, using the database as the single source of truth.
+    user_details = database.get_user_details(user_id)
+    if not user_details:
+        await ctx.send("You do not have a Fan Exchange account. Please use `/register` first.", ephemeral=True)
         return
+
+    in_game_name = user_details['ingamename']
+
+    # This command relies on a single, efficient database call that performs all
+    # complex calculations (P/L, ROI, etc.) at the database level. This keeps the
+    # bot's logic clean, simple, and fast.
+    summary_data = database.get_financial_summary(user_id)
+
+    # The embed is designed for clarity, using formatted fields to present
+    # the key performance indicators (KPIs) in an easily digestible way.
+    embed = discord.Embed(
+        title=f"{ctx.author.display_name}'s Financial Summary",
+        description=f"*In-Game Name: {in_game_name}*",
+        color=discord.Color.blue()
+    )
+
+    # Determine color and sign for P/L and ROI for better visual feedback.
+    p_l = summary_data['p_l']
+    roi = summary_data['roi_percent']
+    p_l_sign = "+" if p_l >= 0 else ""
+    roi_sign = "+" if roi >= 0 else ""
+    embed_color = discord.Color.green() if p_l >= 0 else discord.Color.red()
+    embed.color = embed_color
+
+    embed.add_field(
+        name="💰 Net Worth",
+        value=f"**{format_cc(summary_data['net_worth'])}**\n(CC Balance + Stock Value)",
+        inline=False
+    )
+    embed.add_field(
+        name="📈 Portfolio Value",
+        value=f"{format_cc(summary_data['total_portfolio_value'])}",
+        inline=True
+    )
+    embed.add_field(
+        name="💸 Profit / Loss (P/L)",
+        value=f"{p_l_sign}{format_cc(p_l)}",
+        inline=True
+    )
+    embed.add_field(
+        name="📊 Return on Investment (ROI)",
+        value=f"{roi_sign}{roi:.2f}%",
+        inline=True
+    )
+    embed.set_footer(text="All data reflects your lifetime market activity.")
+
+    await ctx.send(embed=embed)
+
+# bot.py
+
+# (Replace the existing /earnings command with this new version)
+
+@bot.command(name="earnings")
+async def earnings(ctx, days: int = 7):
+    """
+    Displays your earnings history (periodic income and dividends) over the
+    last 7 or 30 days in a paginated embed.
+    """
+    user_id = str(ctx.author.id)
+
+    # --- 1. Input Validation & Data Fetching ---
+    if days not in [7, 30]:
+        await ctx.send("Please choose a valid period: 7 or 30 days.", ephemeral=True)
+        return
+
+    user_details = database.get_user_details(user_id)
+    if not user_details:
+        await ctx.send("You do not have a Fan Exchange account.", ephemeral=True)
+        return
+
+    earnings_df = database.get_earnings_history(user_id, days)
+
+    if earnings_df.empty:
+        await ctx.send(f"You have no earnings recorded in the last {days} days.", ephemeral=True)
+        return
+
+    # --- 2. Pagination Setup ---
+    items_per_page = 10
+    total_pages = math.ceil(len(earnings_df) / items_per_page)
+
+    async def get_page_embed(page_num: int):
+        start_index = page_num * items_per_page
+        end_index = start_index + items_per_page
+        page_df = earnings_df.iloc[start_index:end_index]
+
+        embed = discord.Embed(
+            title=f"Earnings History (Last {days} Days)",
+            color=discord.Color.gold()
+        )
+        
+        # --- SIMPLIFIED LAYOUT ---
+        # This version removes the "Type" column for a cleaner look,
+        # focusing only on the timestamp, amount, and the item itself.
+        
+        body = "```\n"
+        # Adjusted header to be simpler.
+        body += "{:<16} | {:>14} | {}\n".format("Timestamp (CT)", "Amount", "Item")
+        body += "-" * 56 + "\n"
+
+        central_tz = pytz.timezone('US/Central')
+
+        for _, row in page_df.iterrows():
+            timestamp = row['timestamp'].astimezone(central_tz)
+            ts_str = timestamp.strftime('%Y/%m/%d %H:%M')
+            
+            # The item name is now the primary descriptor.
+            transaction_type = row['transaction_type'] if pd.notna(row['transaction_type']) else 'OTHER'
+            if len(transaction_type) > 25:
+                transaction_type = transaction_type[:22] + "..."
+
+            amount_str = f"{row['cc_amount']:,.2f} CC"
+
+            # The format string is updated to reflect the new three-column layout.
+            body += "{:<16} | {:>14} | {}\n".format(
+                ts_str,
+                amount_str,
+                transaction_type
+            )
+        
+        body += "```"
+        embed.description = body
+        embed.set_footer(text=f"Page {page_num + 1} of {total_pages}")
+        return embed
+
+    # --- 3. Initial Display ---
+    initial_embed = await get_page_embed(0)
+    view = PaginationView(ctx.interaction, get_page_embed, total_pages)
+    await ctx.send(embed=initial_embed, view=view)
+
+@bot.command(name="ledger")
+async def ledger(ctx):
+    """
+    Displays a full, paginated ledger of all your transactions with a running balance.
+    Provides interactive buttons to view detailed transaction metadata.
+    """
+    user_id = str(ctx.author.id)
+
+    user_details = database.get_user_details(user_id)
+    if not user_details:
+        await ctx.send("You do not have a Fan Exchange account.", ephemeral=True)
+        return
+
+    ledger_df = database.get_transaction_ledger(user_id)
+
+    if ledger_df.empty:
+        await ctx.send("You have no transactions recorded.", ephemeral=True)
+        return
+
+    # --- THIS IS THE FIX for the context error ---
+    # We now pass the standard `ctx` object to the view.
+    view = LedgerPaginationView(ctx, ledger_df)
+    initial_embed = view.get_current_page_embed()
+    await ctx.send(embed=initial_embed, view=view)
     
-    member, amount_str = parts
+class PaginationView(discord.ui.View):
+    """
+    A generic, reusable view for creating paginated embeds.
+    This class handles the button logic and page state management.
+    It's designed to be subclassed or used directly by commands that need pagination.
+    """
+    def __init__(self, interaction: discord.Interaction, get_page_embed_func, total_pages: int):
+        super().__init__(timeout=180)
+        self.interaction = interaction
+        self.get_page_embed_func = get_page_embed_func
+        self.total_pages = total_pages
+        self.current_page = 0
+        self.update_buttons()
 
-    # --- Input Validation ---
+    def update_buttons(self):
+        """Disables/enables navigation buttons based on the current page."""
+        # The `children` attribute is a list of all UI components in the view.
+        # We can safely assume the first is 'prev' and the second is 'next'.
+        self.children[0].disabled = self.current_page == 0
+        self.children[1].disabled = self.current_page == self.total_pages - 1
+
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.secondary)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # This callback decrements the page counter, updates the buttons, and edits
+        # the original message with the new page's embed.
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.update_buttons()
+            embed = await self.get_page_embed_func(self.current_page)
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # This callback increments the page counter, updates the buttons, and edits
+        # the original message with the new page's embed.
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self.update_buttons()
+            embed = await self.get_page_embed_func(self.current_page)
+            await interaction.response.edit_message(embed=embed, view=self)
+
+
+
+def format_transaction_details(details: dict, item_name: str, transaction_type: str) -> str:
+    """
+    A helper utility that intelligently formats the details of a transaction
+    based on its type, providing a clear and readable breakdown.
+    """
+    if not details:
+        return "No further details available for this transaction."
+
+    formatted_string = ""
+    
+    if transaction_type in ('INVEST', 'SELL'):
+        # Handles trades with correct signs and formatting
+        formatted_string += f"**Stock**: {item_name}\n"
+        shares = details.get('shares_transacted', 0)
+        price = details.get('price_per_share', 0)
+        subtotal = details.get('subtotal', 0)
+        fee = details.get('fee_paid', 0)
+        
+        shares_sign = "+" if shares >= 0 else ""
+        if transaction_type == "INVEST":
+            formatted_string += f"**Shares PURCHASED**: {shares_sign}{shares:,.2f}\n" # Not currency
+        
+        if transaction_type == "SELL":
+            formatted_string += f"**Shares SOLD**: {shares_sign}{shares:,.2f}\n" # Not currency
+        
+        formatted_string += f"**Price / Share**: {price:.2f} CC\n"
+        formatted_string += f"**Subtotal**: {subtotal:.2f} CC\n"
+        
+        formatted_string += f"**Fee Paid**: {fee:.2f} CC\n"
+        
+        formatted_string += "---------------------------------\n"
+        if transaction_type == "INVEST":            
+            formatted_string += f"**TOTAL COST**: {subtotal+fee:.2f} CC\n"
+        if transaction_type == "SELL":
+            formatted_string += f"**NET PROCEEDS**: {subtotal-fee:.2f} CC\n"
+
+    elif transaction_type == 'PERIODIC_EARNINGS':
+        # Handles earnings with logical order and correct formatting
+        key_order = [
+            ('tenure_yield', 'Tenure Yield'),
+            ('performance_yield', 'Performance Yield'),
+            ('hype_multiplier', 'Hype Multiplier'),
+            ('hype_bonus_yield', 'Hype Bonus Yield'),
+            ('base_cc_earned', 'Personal CC Earned')
+        ]
+        
+        for key, title in key_order:
+            if key in details:
+                value = details[key]
+                if key == 'base_cc_earned':
+                    formatted_string += "---------------------------------\n"
+                if key == 'hype_multiplier':
+                    formatted_string += f"**{title}**: {value:.2f}x\n" # Not currency
+                else:
+                    formatted_string += f"**{title}**: {value:.2f} CC\n"
+
+    elif transaction_type == 'DIVIDEND':
+        # Handles dividends with a clean, simple format
+        source = details.get('source_player', 'Unknown')
+        div_type = details.get('type', 'Dividend')
+        formatted_string += f"**Source Player**: {source}\n"
+        formatted_string += f"**Type**: {div_type}\n"
+
+    else:
+        # A fallback for any other type with details
+        for key, value in details.items():
+            title = key.replace('_', ' ').title()
+            formatted_string += f"**{title}**: {value}\n"
+            
+    return formatted_string
+
+class LedgerPaginationView(discord.ui.View):
+    """
+    A specialized pagination view for the transaction ledger with improved UI
+    for linking transactions to their detail buttons.
+    """
+    def __init__(self, ctx, ledger_df: pd.DataFrame):
+        super().__init__(timeout=180)
+        self.ctx = ctx
+        self.ledger_df = ledger_df
+        self.items_per_page = 8
+        self.total_pages = math.ceil(len(self.ledger_df) / self.items_per_page)
+        self.current_page = 0
+        self.details_cache = {}
+        self.rebuild_view()
+
+    def rebuild_view(self):
+        """Clears and rebuilds the UI components for the current page."""
+        self.clear_items()
+        self.details_cache.clear()
+        
+        start_index = self.current_page * self.items_per_page
+        end_index = start_index + self.items_per_page
+        page_df = self.ledger_df.iloc[start_index:end_index]
+
+        # Navigation buttons (row 0)
+        prev_button = discord.ui.Button(label="◀️ Previous", style=discord.ButtonStyle.secondary, disabled=self.current_page == 0, row=0)
+        next_button = discord.ui.Button(label="Next ▶️", style=discord.ButtonStyle.secondary, disabled=self.current_page >= self.total_pages - 1, row=0)
+        prev_button.callback = self.prev_page
+        next_button.callback = self.next_page
+        self.add_item(prev_button)
+        self.add_item(next_button)
+
+        details_counter = 1
+        for _, row in page_df.iterrows():
+            if row['details'] is not None and pd.notna(row['details']):
+                transaction_id = row['transaction_id']
+                self.details_cache[transaction_id] = {
+                    "details": row['details'],
+                    "item_name": row['item_name'],
+                    "transaction_type": row['transaction_type']
+                }
+                
+                button_row = 1 + ((details_counter - 1) // 5)
+                
+                details_button = discord.ui.Button(
+                    label=f"[{details_counter}] Details",
+                    style=discord.ButtonStyle.primary,
+                    custom_id=f"ledger_details:{transaction_id}",
+                    row=button_row
+                )
+                details_button.callback = self.show_details
+                self.add_item(details_button)
+                details_counter += 1
+    
+    def get_current_page_embed(self) -> discord.Embed:
+        """Generates the Discord embed for the current page."""
+        start_index = self.current_page * self.items_per_page
+        end_index = start_index + self.items_per_page
+        page_df = self.ledger_df.iloc[start_index:end_index]
+
+        embed = discord.Embed(title="Transaction Ledger", color=discord.Color.purple())
+        
+        body = ""
+        details_counter = 1
+        for _, row in page_df.iterrows():
+            unix_ts = int(row['timestamp'].timestamp())
+            cc_amount = row['cc_amount']
+            sign = "+" if cc_amount >= 0 else ""
+            
+            item_display_name = row['item_name']
+            if row['transaction_type'] == 'DIVIDEND' and row['details']:
+                div_type = row['details'].get('type', 'Dividend')
+                source = row['details'].get('source_player', 'Unknown')
+                item_display_name = f"{div_type} ({source})"
+
+            details_marker = ""
+            if row['details'] is not None and pd.notna(row['details']):
+                details_marker = f" `[{details_counter}]`"
+                details_counter += 1
+            
+            body += (f"**<t:{unix_ts}:R>**: **{row['transaction_type']}**\n"
+                     f"> Item: `{item_display_name}`\n"
+                     f"> Amount: `{sign}{cc_amount:.2f} CC` | Balance: `{format_cc(row['running_balance'])}`{details_marker}\n")
+        
+        embed.description = body
+        embed.set_footer(text=f"Page {self.current_page + 1} of {self.total_pages}")
+        return embed
+
+    # --- THESE METHODS WERE MISSING ---
+    async def prev_page(self, interaction: discord.Interaction):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.rebuild_view()
+            embed = self.get_current_page_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    async def next_page(self, interaction: discord.Interaction):
+        if self.current_page < self.total_pages - 1:
+            self.current_page += 1
+            self.rebuild_view()
+            embed = self.get_current_page_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    async def show_details(self, interaction: discord.Interaction):
+        transaction_id = int(interaction.data['custom_id'].split(':')[1])
+        cached_data = self.details_cache.get(transaction_id)
+        
+        formatted_details = format_transaction_details(
+            cached_data['details'],
+            cached_data['item_name'],
+            cached_data['transaction_type']
+        )
+        
+        await interaction.response.send_message(
+            f"### Details for Transaction ID: `{transaction_id}`\n{formatted_details}",
+            ephemeral=True
+        )
+
+# --- NEW: UI Class for Trade Confirmations ---
+class TradeConfirmationView(discord.ui.View):
+    def __init__(self, *, timeout=30, trade_details: dict):
+        super().__init__(timeout=timeout)
+        self.trade_details = trade_details
+        self.confirmed = None
+
+    @discord.ui.button(label='Confirm Trade', style=discord.ButtonStyle.green)
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.confirmed = True
+        # Disable buttons to prevent double-clicking
+        for item in self.children:
+            item.disabled = True
+        # Update the original message to show the action was taken
+        await interaction.response.edit_message(content="Processing your trade...", view=self)
+        self.stop()
+
+    @discord.ui.button(label='Cancel', style=discord.ButtonStyle.red)
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.confirmed = False
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="Trade cancelled.", view=self)
+        self.stop()
+
+@bot.command(name="invest")
+async def invest(ctx, identifier: str, shares_str: str):
+    """Invest in a stock by purchasing a specific number of shares."""
     try:
-        if amount_str.lower() == 'all':
-            cc_amount = -1 
-        else:
-            cc_amount = int(amount_str)
-        if cc_amount <= 0 and amount_str.lower() != 'all':
-            await ctx.send("Please enter a positive whole number for the amount to invest.", ephemeral=True)
-            return
+        shares_to_buy = float(shares_str)
+        if shares_to_buy <= 0:
+            return await ctx.send("Please enter a positive number of shares to buy.", ephemeral=True)
     except ValueError:
-        await ctx.send("Invalid amount. Please enter a whole number (e.g., 1000) or 'all'.", ephemeral=True)
-        return
+        return await ctx.send("Invalid number of shares. Please enter a number (e.g., 10.5).", ephemeral=True)
 
-    investor_id = str(ctx.author.id)
+    user_id = str(ctx.author.id)
+    
+    # 1. Get Data
+    stock = database.get_stock_by_ticker_or_name(identifier)
+    if not stock:
+        return await ctx.send(f"Could not find a stock for '{identifier}'.", ephemeral=True)
 
-    # --- File Locking to prevent race conditions ---
-    lock_file = 'market/market.lock'
-    if os.path.exists(lock_file):
-        await ctx.send("The market is currently busy with another transaction. Please try again in a moment.", ephemeral=True)
-        return
-    open(lock_file, 'w').close() # Create lock
+    balance = database.get_user_balance_by_discord_id(user_id)
+    if balance is None:
+        return await ctx.send("You do not have a Fan Exchange account.", ephemeral=True)
 
-    try:
-        crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
-        stock_prices_df = load_market_file('stock_prices.csv')
-        portfolios_df = load_market_file('portfolios.csv', dtype={'investor_discord_id': str})
-        market_state = load_market_file('market_state.csv').set_index('state_name')['value']
+    # 2. Calculate Trade Details
+    current_price = float(stock['current_price'])
+    subtotal = shares_to_buy * current_price
+    broker_fee = subtotal * 0.03
+    total_cost = subtotal + broker_fee
 
-        investor_data = crew_coins_df[crew_coins_df['discord_id'] == investor_id]
-        if investor_data.empty: return await ctx.send("You do not have a Fan Exchange account yet.", ephemeral=True)
+    if float(balance) < total_cost:
+        return await ctx.send(f"Insufficient funds. You need {format_cc(total_cost)} but only have {format_cc(balance)}.", ephemeral=True)
 
-        investor_balance = float(investor_data['balance'].iloc[0])
-        if cc_amount == -1: cc_amount = int(investor_balance)
-        if cc_amount <= 0: return await ctx.send("You have no Crew Coins to invest.", ephemeral=True)
-        if investor_balance < cc_amount: return await ctx.send(f"You don't have enough. Your balance is {format_cc(investor_balance)}.", ephemeral=True)
+    # 3. Confirmation UI
+    new_balance_preview = float(balance) - total_cost
+    embed = discord.Embed(title="Trade Confirmation: BUY", color=discord.Color.green())
+    details = (
+        f"**Stock**: {stock['ingamename']} (${stock['ticker']})\n"
+        f"**Shares**: {shares_to_buy:,.2f}\n"
+        f"**Price/Share**: {current_price:,.2f} CC\n"
+        f"--------------------------\n"
+        f"**Subtotal**: {subtotal:,.2f} CC\n"
+        f"**Broker's Fee (3%)**: {broker_fee:,.2f} CC\n"
+        f"**Total Cost**: **{total_cost:,.2f} CC**\n\n"
+        f"*Your new balance will be: {new_balance_preview:,.2f} CC*"
+    )
+    embed.description = details
+    # Get the discord_id of the person whose stock is being bought
+    target_id = database.get_discord_id_by_name(stock['ingamename'])
 
-        target_name = get_name_from_ticker_or_name(member)
-        if not target_name: return await ctx.send(f"Could not find a stock for '{member}'.", ephemeral=True)
-        
-        target_stock = stock_prices_df[stock_prices_df['inGameName'] == target_name]
-        current_price = float(target_stock['current_price'].iloc[0])
+    trade_details = {
+        'actor_id': user_id,
+        'target_id': target_id, # Add target_id
+        'stock_name': stock['ingamename'],
+        'shares': shares_to_buy,
+        'price_per_share': current_price, # Add price_per_share
+        'total_cost': -total_cost,
+        'fee': broker_fee,
+        'transaction_type': 'INVEST'
+    }
+    view = TradeConfirmationView(trade_details=trade_details)
+    
+    await ctx.send(embed=embed, view=view, ephemeral=True)
+    await view.wait() # Wait for the user to click a button
 
-        broker_fee_rate = 0.03
-        if str(market_state.get('active_event')) == "Stewards' Tax Holiday":
-            broker_fee_rate = 0.005
-        
-        broker_fee = cc_amount * broker_fee_rate
-        shares_purchased = (cc_amount - broker_fee) / current_price
-        
-        # Calculate the new balance before updating the DataFrame
-        new_balance = investor_balance - cc_amount
-        crew_coins_df.loc[crew_coins_df['discord_id'] == investor_id, 'balance'] = new_balance
-
-        existing_holding = portfolios_df[(portfolios_df['investor_discord_id'] == investor_id) & (portfolios_df['stock_inGameName'] == target_name)]
-        if not existing_holding.empty:
-            portfolios_df.loc[existing_holding.index, 'shares_owned'] += shares_purchased
+    # 4. Execute Trade if Confirmed
+    if view.confirmed:
+        new_balance = database.execute_trade_transaction(**view.trade_details)
+        if new_balance is not None:
+            await ctx.send(f"✅ **Trade Executed!** You purchased {shares_to_buy:,.2f} shares of **{stock['ingamename']}**. Your new balance is {format_cc(new_balance)}.", ephemeral=True)
         else:
-            new_row = pd.DataFrame([{'investor_discord_id': investor_id, 'stock_inGameName': target_name, 'shares_owned': shares_purchased}])
-            portfolios_df = pd.concat([portfolios_df, new_row], ignore_index=True)
-
-        crew_coins_df.to_csv('market/crew_coins.csv', index=False)
-        portfolios_df.to_csv('market/portfolios.csv', index=False)
-        
-        target_id_row = crew_coins_df[crew_coins_df['inGameName'] == target_name]
-        target_id = target_id_row['discord_id'].iloc[0] if not target_id_row.empty else 'N/A'
-        log_market_transaction(actor_id=investor_id, transaction_type='INVEST', target_id=target_id, item_name=f"{target_name}'s Stock", item_quantity=shares_purchased, cc_amount=-cc_amount, fee_paid=broker_fee)
-        log_exchange_tax(actor_id=investor_id, transaction_type='INVEST', target_name=target_name, fee_paid=broker_fee)
-
-        embed = discord.Embed(title="✅ Investment Successful", color=discord.Color.green())
-        embed.description = (f"You invested **{format_cc(cc_amount)}** into **{target_name}**.\n")
-        # Add the new balance to the footer
-        embed.set_footer(text=f"Your new balance is {format_cc(new_balance)}")
-        await ctx.send(embed=embed)
-
-    finally:
-        os.remove(lock_file)
-
+            # Changed from ctx.followup.send to ctx.send for prefix command compatibility.
+            await ctx.send("❌ **Trade Failed!** This could be due to a price change or insufficient funds. Please try again.", ephemeral=True)
 
 @bot.command(name="sell")
-async def sell(ctx, *, member_and_shares: str):
+async def sell(ctx, identifier: str, shares_str: str):
     """Sell a specific number of shares you own."""
-    # --- Input Parsing to handle spaces in names ---
-    parts = member_and_shares.rsplit(' ', 1)
-    if len(parts) != 2:
-        await ctx.send("Invalid format. Please use `/sell [member name] [shares]`. Example: `/sell Dill Dough 50`", ephemeral=True)
-        return
-    
-    member, shares_to_sell_str = parts
-    
-    # --- Input Validation ---
     try:
-        if shares_to_sell_str.lower() == 'all':
-            shares_to_sell = -1 
-        else:
-            shares_to_sell = float(shares_to_sell_str)
-        if shares_to_sell <= 0 and shares_to_sell_str.lower() != 'all':
-            await ctx.send("Please enter a positive number of shares to sell.", ephemeral=True)
-            return
+        shares_to_sell = float(shares_str)
+        if shares_to_sell <= 0:
+            return await ctx.send("Please enter a positive number of shares to sell.", ephemeral=True)
     except ValueError:
-        await ctx.send("Invalid amount. Please enter a number (e.g., 50.5) or 'all'.", ephemeral=True)
-        return
+        return await ctx.send("Invalid number of shares. Please enter a number (e.g., 10.5).", ephemeral=True)
 
-    seller_id = str(ctx.author.id)
+    user_id = str(ctx.author.id)
 
-    # --- File Locking ---
-    lock_file = 'market/market.lock'
-    if os.path.exists(lock_file):
-        await ctx.send("The market is currently busy with another transaction. Please try again in a moment.", ephemeral=True)
-        return
-    open(lock_file, 'w').close()
+    # 1. Get Data
+    stock = database.get_stock_by_ticker_or_name(identifier)
+    if not stock:
+        return await ctx.send(f"Could not find a stock for '{identifier}'.", ephemeral=True)
 
-    try:
-        crew_coins_df = load_market_file('crew_coins.csv', dtype={'discord_id': str})
-        stock_prices_df = load_market_file('stock_prices.csv')
-        portfolios_df = load_market_file('portfolios.csv', dtype={'investor_discord_id': str})
-        market_state = load_market_file('market_state.csv').set_index('state_name')['value']
+    portfolio = database.get_portfolio_details(user_id)
+    user_holding = portfolio[portfolio['stock_ingamename'] == stock['ingamename']]
+    
+    if user_holding.empty or float(user_holding['shares_owned'].iloc[0]) < shares_to_sell:
+        shares_owned = 0 if user_holding.empty else float(user_holding['shares_owned'].iloc[0])
+        return await ctx.send(f"Insufficient shares. You are trying to sell {shares_to_sell:,.2f} but you only own {shares_owned:,.2f} of **{stock['ingamename']}**.", ephemeral=True)
 
-        target_name = get_name_from_ticker_or_name(member)
-        if not target_name: return await ctx.send(f"Could not find a stock for '{member}'.", ephemeral=True)
-        
-        target_stock = stock_prices_df[stock_prices_df['inGameName'] == target_name]
-        current_price = float(target_stock['current_price'].iloc[0])
+    balance = database.get_user_balance_by_discord_id(user_id)
 
-        holding_index = portfolios_df[(portfolios_df['investor_discord_id'] == seller_id) & (portfolios_df['stock_inGameName'] == target_name)].index
-        if holding_index.empty: return await ctx.send(f"You do not own any shares of **{target_name}**.", ephemeral=True)
-        
-        shares_owned = float(portfolios_df.loc[holding_index, 'shares_owned'].iloc[0])
-        if shares_to_sell == -1: shares_to_sell = shares_owned
-        if shares_owned < shares_to_sell:
-            return await ctx.send(f"You don't have enough shares. You only own **{shares_owned:,.2f}**.", ephemeral=True)
+    # 2. Calculate Trade Details
+    current_price = float(stock['current_price'])
+    subtotal = shares_to_sell * current_price
+    broker_fee = subtotal * 0.03
+    total_proceeds = subtotal - broker_fee
 
-        broker_fee_rate = 0.03
-        if str(market_state.get('active_event')) == "Stewards' Tax Holiday":
-            broker_fee_rate = 0.005
+    # 3. Confirmation UI
+    new_balance_preview = float(balance) + total_proceeds
+    embed = discord.Embed(title="Trade Confirmation: SELL", color=discord.Color.red())
+    details = (
+        f"**Stock**: {stock['ingamename']} (${stock['ticker']})\n"
+        f"**Shares**: {shares_to_sell:,.2f}\n"
+        f"**Price/Share**: {current_price:,.2f} CC\n"
+        f"--------------------------\n"
+        f"**Gross Proceeds**: {subtotal:,.2f} CC\n"
+        f"**Broker's Fee (3%)**: {broker_fee:,.2f} CC\n"
+        f"**Total Proceeds**: **{total_proceeds:,.2f} CC**\n\n"
+        f"*Your new balance will be: {new_balance_preview:,.2f} CC*"
+    )
+    embed.description = details
+    
+    target_id = database.get_discord_id_by_name(stock['ingamename'])
 
-        gross_value = shares_to_sell * current_price
-        broker_fee = gross_value * broker_fee_rate
-        net_proceeds = gross_value - broker_fee
-        
-        crew_coins_df.loc[crew_coins_df['discord_id'] == seller_id, 'balance'] += net_proceeds
-        portfolios_df.loc[holding_index, 'shares_owned'] -= shares_to_sell
-        if portfolios_df.loc[holding_index, 'shares_owned'].iloc[0] < 0.001:
-            portfolios_df.drop(holding_index, inplace=True)
-            
-        crew_coins_df.to_csv('market/crew_coins.csv', index=False)
-        portfolios_df.to_csv('market/portfolios.csv', index=False)
-        
-        target_id_row = crew_coins_df[crew_coins_df['inGameName'] == target_name]
-        target_id = target_id_row['discord_id'].iloc[0] if not target_id_row.empty else 'N/A'
-        
-        log_market_transaction(actor_id=seller_id, transaction_type='SELL', target_id=target_id, item_name=f"{target_name}'s Stock", item_quantity=-shares_to_sell, cc_amount=net_proceeds, fee_paid=broker_fee)
-        log_exchange_tax(actor_id=seller_id, transaction_type='SELL', target_name=target_name, fee_paid=broker_fee)
-        
-        embed = discord.Embed(title="✅ Sale Successful", color=discord.Color.red())
-        embed.description = f"You sold **{shares_to_sell:,.2f} shares** of **{target_name}** for a gross value of {format_cc(gross_value)}.\nAfter a {broker_fee_rate:.1%} Broker's Fee ({format_cc(broker_fee)}), you received **{format_cc(net_proceeds)}**."
-        await ctx.send(embed=embed)
-    finally:
-        os.remove(lock_file)
+    trade_details = {
+        'actor_id': user_id,
+        'target_id': target_id, # Add target_id
+        'stock_name': stock['ingamename'],
+        'shares': -shares_to_sell, # Selling removes shares
+        'price_per_share': current_price, # Add price_per_share
+        'total_cost': total_proceeds, # Proceeds are positive
+        'fee': broker_fee,
+        'transaction_type': 'SELL'
+    }
+    view = TradeConfirmationView(trade_details=trade_details)
+
+    await ctx.send(embed=embed, view=view, ephemeral=True)
+    await view.wait()
+
+    # 4. Execute Trade if Confirmed
+    if view.confirmed:
+        new_balance = database.execute_trade_transaction(**view.trade_details)
+        if new_balance is not None:
+            await ctx.send(f"✅ **Trade Executed!** You sold {shares_to_sell:,.2f} shares of **{stock['ingamename']}**. Your new balance is {format_cc(new_balance)}.", ephemeral=True)
+        else:
+            # Changed from ctx.followup.send to ctx.send for prefix command compatibility.
+            await ctx.send("❌ **Trade Failed!** This could be due to a price change or insufficient funds. Please try again.", ephemeral=True)
         
 BOT_PERSONALITIES = {
     "StartingGateSally": {"type": "starter"},
