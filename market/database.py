@@ -776,52 +776,73 @@ def update_user_ticker(ingamename: str, ticker: str):
 
 def execute_trade_transaction(
     actor_id: str,
-    target_id: str, # New parameter
+    target_id: str,
     stock_name: str,
     shares: float,
-    price_per_share: float, # New parameter
+    price_per_share: float,
     total_cost: float,
     fee: float,
     transaction_type: str
 ):
     """
     Executes a buy or sell order as a single, atomic transaction.
-    Handles balance updates, portfolio changes, and now logs rich, detailed
-    transaction metadata to a JSONB field.
+    This version includes a check to ensure a user's share balance cannot go negative.
     """
     conn = get_connection()
     if not conn: return None
 
     with conn.cursor() as cursor:
         try:
-            # 1. Lock and update balance (logic is unchanged)
+            # 1. Lock and update CC balance (this logic is fine)
             cursor.execute("SELECT balance FROM balances WHERE discord_id = %s FOR UPDATE;", (actor_id,))
             wallet = cursor.fetchone()
-            if not wallet or wallet[0] < -total_cost:
+            # For sells, total_cost is positive (proceeds). For buys, it's negative.
+            # So for a buy, we check if the wallet has enough.
+            if transaction_type == 'INVEST' and (not wallet or wallet[0] < -total_cost):
                 conn.rollback()
                 return None
             
             cursor.execute("UPDATE balances SET balance = balance + %s WHERE discord_id = %s RETURNING balance;", (total_cost, actor_id))
             new_balance = cursor.fetchone()[0]
 
-            # 2. Update portfolio (logic is unchanged)
-            cursor.execute("""
-                INSERT INTO portfolios (investor_discord_id, stock_ingamename, shares_owned)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (investor_discord_id, stock_ingamename) DO UPDATE
-                SET shares_owned = portfolios.shares_owned + EXCLUDED.shares_owned;
-            """, (actor_id, stock_name, shares))
+            # 2. Update portfolio with a conditional WHERE clause
+            # This is the key change to prevent double-selling at the code level.
+            # The query will only update the row if the final share count is >= 0.
+            update_portfolio_query = """
+                UPDATE portfolios
+                SET shares_owned = portfolios.shares_owned + %(shares)s
+                WHERE investor_discord_id = %(actor_id)s
+                  AND stock_ingamename = %(stock_name)s
+                  AND portfolios.shares_owned + %(shares)s >= 0;
+            """
+            cursor.execute(update_portfolio_query, {
+                'shares': shares,
+                'actor_id': actor_id,
+                'stock_name': stock_name
+            })
+            
+            # If the above query affected 0 rows, it means the user didn't have enough shares.
+            if cursor.rowcount == 0:
+                # We also need to handle the case for a new investor buying shares.
+                # If it's a buy (shares > 0), we can insert.
+                if shares > 0:
+                    cursor.execute("""
+                        INSERT INTO portfolios (investor_discord_id, stock_ingamename, shares_owned)
+                        VALUES (%s, %s, %s)
+                    """, (actor_id, stock_name, shares))
+                else:
+                    # If it was a sell and rowcount was 0, they had insufficient shares.
+                    logging.error(f"Trade failed: Insufficient shares for {actor_id} to sell {stock_name}.")
+                    conn.rollback()
+                    return None
 
-            # --- THIS IS THE NEW LOGIC ---
-            # 3. Create rich JSON details for the transaction log.
+            # 3. Log the transaction (this logic is fine)
             details = json.dumps({
                 "price_per_share": round(price_per_share, 2),
                 "shares_transacted": round(shares, 4),
                 "subtotal": round(abs(total_cost) - fee, 2),
                 "fee_paid": round(fee, 2)
             })
-
-            # 4. Log the complete transaction with all new details.
             cursor.execute("""
                 INSERT INTO transactions (actor_id, target_id, transaction_type, item_name, item_quantity, cc_amount, fee_paid, details, balance_after)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
@@ -998,6 +1019,88 @@ def execute_purchase_transaction(actor_id: str, item_name: str, cost: float, upg
             conn.rollback()
             return None
     conn.close()
+
+def get_user_details_by_identifier(identifier: str) -> dict | None:
+    """Finds a user's details by their in-game name or ticker."""
+    conn = get_connection()
+    if not conn: return None
+
+    # Use a dictionary cursor to get column names
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    
+    # First, try to find by in-game name in the 'balances' table
+    cursor.execute("SELECT discord_id, ingamename FROM balances WHERE ingamename = %s", (identifier,))
+    user = cursor.fetchone()
+    
+    # If not found, try to find by ticker in the 'stock_prices' table
+    if not user:
+        cursor.execute("SELECT ingamename FROM stock_prices WHERE ticker ILIKE %s", (identifier,))
+        stock = cursor.fetchone()
+        # If we found a stock, use its name to find the user in the 'balances' table
+        if stock:
+            cursor.execute("SELECT discord_id, ingamename FROM balances WHERE ingamename = %s", (stock['ingamename'],))
+            user = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
+    
+    # Return the user data as a dictionary if found
+    return dict(user) if user else None
+
+# In your database.py file
+
+def execute_admin_award(admin_id: str, target_id: str, amount: int) -> float | None:
+    """
+    Atomically awards CC to a user and logs the transaction.
+    Returns the new balance on success, None on failure.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    new_balance = None
+    
+    try:
+        print("--- Starting Admin Award Transaction ---")
+        
+        # 1. Update the user's balance in the CORRECT table
+        update_query = "UPDATE balances SET balance = balance + %s WHERE discord_id = %s"
+        cursor.execute(update_query, (amount, target_id))
+        print(f"UPDATE balances query affected {cursor.rowcount} row(s).")
+
+        # 2. Log this action in the universal transaction log
+        log_query = """
+            INSERT INTO transactions 
+            (actor_id, transaction_type, target_id, item_name, cc_amount)
+            VALUES (%s, %s, %s, %s, %s)
+        """
+        log_values = (admin_id, 'ADMIN_AWARD', target_id, 'Admin Discretionary Award', amount)
+        cursor.execute(log_query, log_values)
+        print(f"INSERT transactions query affected {cursor.rowcount} row(s).")
+
+        # 3. Get the new balance from the CORRECT table
+        cursor.execute("SELECT balance FROM balances WHERE discord_id = %s", (target_id,))
+        result = cursor.fetchone()
+        if result:
+            new_balance = result[0]
+            print(f"Fetched new balance: {new_balance}")
+
+        # 4. Commit changes
+        print("Attempting to commit transaction...")
+        conn.commit()
+        print("✅ Transaction committed successfully.")
+
+    except Exception as err:
+        print(f"❌ DATABASE ERROR: {err}")
+        print("Rolling back transaction...")
+        conn.rollback()
+        return None
+    finally:
+        cursor.close()
+        conn.close()
+        print("--- Admin Award Transaction Finished ---")
+
+    return new_balance
+
+    return new_balance
     
 def get_financial_summary(discord_id: str) -> dict:
     """
@@ -1146,44 +1249,51 @@ def get_earnings_history(discord_id: str, days: int) -> pd.DataFrame:
 
 def get_transaction_ledger(discord_id: str) -> pd.DataFrame:
     """
-    Retrieves a user's complete transaction history, calculating a running
-    balance that correctly incorporates the starting balance.
+    Retrieves a user's complete transaction history, calculating a running balance.
+    This version correctly includes transactions where the user is the target (e.g., admin awards).
     """
     conn = get_connection()
     if not conn:
         return pd.DataFrame()
 
-    # --- THIS IS THE CORRECTED QUERY ---
-    # All instances of `%(user_id)s` have been replaced with the standard `%s`
-    # placeholder to ensure compatibility with the database driver.
+    # This corrected query finds all transactions relevant to the user and calculates
+    # the running balance from their perspective.
     query = """
-    WITH UserTransactions AS (
+    WITH RelevantTransactions AS (
+        -- Step 1: Gather all transactions where the user is either the actor or the target.
         SELECT
             *,
-            SUM(cc_amount) OVER (ORDER BY timestamp, transaction_id) as transaction_sum
+            -- Step 2: Determine the net effect of each transaction on THIS user's balance.
+            CASE
+                WHEN actor_id = %(user_id)s THEN cc_amount -- Standard transactions (buys are negative, sells/earnings are positive)
+                WHEN target_id = %(user_id)s THEN cc_amount -- Awards where the user is the target (always positive)
+                ELSE 0
+            END AS balance_effect
         FROM transactions
-        WHERE actor_id = %s
+        WHERE actor_id = %(user_id)s OR target_id = %(user_id)s
+    ),
+    RunningBalance AS (
+        -- Step 3: Calculate the running total of the balance effects over time.
+        SELECT
+            *,
+            SUM(balance_effect) OVER (ORDER BY timestamp ASC, transaction_id ASC) as running_sum
+        FROM RelevantTransactions
     )
+    -- Step 4: Use the running total and the user's current balance to calculate the historical balance for each transaction.
     SELECT
-        t.transaction_id,
-        t.timestamp,
-        t.transaction_type,
-        t.item_name,
-        t.item_quantity,
-        t.cc_amount,
-        t.fee_paid,
-        t.details,
-        (SELECT balance FROM balances WHERE discord_id = %s) -
-        (SELECT SUM(cc_amount) FROM transactions WHERE actor_id = %s) +
-        t.transaction_sum AS running_balance
-    FROM UserTransactions t
-    ORDER BY t.timestamp DESC;
+        rb.transaction_id, rb.timestamp, rb.transaction_type, rb.item_name, rb.item_quantity,
+        rb.cc_amount, rb.fee_paid, rb.details,
+        (SELECT balance FROM balances WHERE discord_id = %(user_id)s) -- Current Balance
+        -
+        (SELECT SUM(balance_effect) FROM RunningBalance) -- Total Net Change Ever
+        +
+        rb.running_sum AS running_balance
+    FROM RunningBalance rb
+    ORDER BY rb.timestamp DESC;
     """
     df = pd.DataFrame()
     try:
-        # The params argument is now a tuple containing the discord_id three times,
-        # one for each `%s` placeholder in the query.
-        df = pd.read_sql(query, conn, params=(discord_id, discord_id, discord_id))
+        df = pd.read_sql(query, conn, params={'user_id': discord_id})
     except (Exception, psycopg2.Error) as error:
         logging.error(f"Error fetching transaction ledger for {discord_id}: {error}")
     finally:
