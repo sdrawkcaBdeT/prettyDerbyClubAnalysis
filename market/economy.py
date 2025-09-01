@@ -49,7 +49,7 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
         performance_yield_modifier = 0.5
     elif active_event_name == "The Grand Derby":
         print("EVENT ACTIVE: Applying 'The Grand Derby' earnings boost!")
-        performance_yield_modifier = 5.0
+        performance_yield_modifier = 12.0
 
     latest_data = enriched_df.sort_values('timestamp').groupby('inGameName').tail(1)
     new_transaction_records = []

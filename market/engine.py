@@ -68,10 +68,15 @@ def get_lagged_average(enriched_df, member_name, market_state, run_timestamp, ov
     if historical_data.empty:
         return 0
         
-    rolling_avg_series = historical_data['fanGain'].rolling(f'{avg_hours}h').mean()
+    #--- Time-Weighted Average Implementation ---
+    # 1. Resample the data into 1-hour blocks, summing any gains within each block.
+    resampled_data = historical_data['fanGain'].resample('1h').sum()
+            
+    # 2. Apply the rolling mean to this consistent, time-based data.
+    rolling_avg_series = resampled_data.rolling(window=avg_hours).mean()
+                    
+    return rolling_avg_series.iloc[-1] if not rolling_avg_series.empty and pd.notna(rolling_avg_series.iloc[-1]) else 0 
     
-    return rolling_avg_series.iloc[-1] if not rolling_avg_series.empty and pd.notna(rolling_avg_series.iloc[-1]) else 0
-
 def get_club_sentiment(enriched_df):
     """Calculates the club sentiment based on recent fan gain vs. 7-day average."""
     enriched_df['timestamp'] = pd.to_datetime(enriched_df['timestamp']).dt.tz_convert('US/Central')
@@ -213,7 +218,7 @@ def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
         if active_event_name == "The Grand Derby":
             # During the Derby, force a 3-hour rolling average with NO lag.
             # We set lag_days to 0 manually in the function call.
-            lagged_avg_gain = get_lagged_average(enriched_df, name, market_state, run_timestamp, override_hours=3)
+            lagged_avg_gain = get_lagged_average(enriched_df, name, market_state, run_timestamp, override_hours=14)
             # By calling with override_hours, we also bypass the lag setting for the derby
             end_of_window = run_timestamp
             member_df = enriched_df[enriched_df['inGameName'] == name].copy()
