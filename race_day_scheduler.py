@@ -71,6 +71,7 @@ def run_script(script_paths, sleep_time=0):
 
 
 if __name__ == "__main__":
+    # time.sleep(60)
     if len(sys.argv) > 1:
         if sys.argv[1] == 'full_run_once':
             print("--- Starting single 'full_run_once' sequence... ---")

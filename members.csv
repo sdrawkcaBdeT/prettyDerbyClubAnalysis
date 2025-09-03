@@ -1,6 +1,6 @@
 inGameName,memberID,status,joinDate,departDate,clubInfoOrder,notes,discordHandle
 CashBaggins,"136,916,624,276",Active,2025/07/08,,1,The founder! Data nerd.,CashBaggins
-Top,"903,049,412,215",Active,2025/7/10,,2,"the OG club member, back in the day, it was just Cash and Top. Fun fact, Cash and Top share a birthday!",Top Plz
+Top,"903,049,412,215",Inactive,2025/7/10,2025/09/02,2,"the OG club member, back in the day, it was just Cash and Top. Fun fact, Cash and Top share a birthday!",Top Plz
 WaveofGratitude,"974,000,987,296",Active,2025/08/08,,3,round 1 recruiting member!,Wave of Gratitude
 GhostlyInsomnia,"501,946,555,879",Active,2025/08/08,,4,round 1 recruiting member!,
 Kino,"233,326,457,991",Active,2025/08/08,,5,round 1 recruiting member!,KinoYoru
@@ -14,8 +14,8 @@ Ray,"798,189,422,300",Active,2025/08/09,,12,round 1 recruiting member!,
 Epidemic,"672,866,355,033",Active,2025/08/09,,13,Provided encouragement to Cash to get the club going!,Epidemic
 Gearras,"880,360,629,036",Active,2025/08/09,,14,round 1 recruiting member!,Gearras
 SmillBisser,PENDING000,Active,2025/08/09,,15,request,
-StarLight,PENDING001,Active,2025/08/09,,16,request,
-cinciol,PENDING002,Active,2025/08/09,,17,request,
+StarLight,PENDING001,Inactive,2025/08/09,2025/09/02,16,request,
+cinciol,PENDING002,Inactive,2025/08/09,2025/09/02,17,request,
 Iyy,"627,953,692,508",Active,2025/08/09,,18,WaveofGratitude referral,
 Walzy,"461,448,286,660",Active,2025/08/10,,19,round 1 recruiting member!,
 Keyevin,"336,227,182,745",Active,2025/08/10,,20,round 1 recruiting member!,Keyevin
@@ -29,3 +29,4 @@ AO,"864,375,266,121",Active,2025/08/11,,27,round 2 recruiting,Olive (AO)
 s,"794,855,373,577",Active,2025/08/11,,28,round 2 recruiting,
 Kurumi,"742,076,625,178",Active,2025/08/11,,29,round 2 recruiting,
 Kei,"475,915,796,116",Active,2025/08/12,,30,round 2 recruiting,
+Nice,"149,369,672,688",Active,2025/09/02,,31,referral from Wither,

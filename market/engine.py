@@ -216,28 +216,12 @@ def update_all_stock_prices(enriched_df, market_data_dfs, run_timestamp):
         nudged_floor = prestige_floor + nudge_bonus 
         
         if active_event_name == "The Grand Derby":
-            # During the Derby, force a 3-hour rolling average with NO lag.
-            # We set lag_days to 0 manually in the function call.
+            # During the Derby, force a 14-hour rolling average with NO lag.
             lagged_avg_gain = get_lagged_average(enriched_df, name, market_state, run_timestamp, override_hours=14)
-            # By calling with override_hours, we also bypass the lag setting for the derby
-            end_of_window = run_timestamp
-            member_df = enriched_df[enriched_df['inGameName'] == name].copy()
-            member_df['timestamp'] = pd.to_datetime(member_df['timestamp'])
-            member_df = member_df.set_index('timestamp').sort_index()
-            historical_data = member_df[member_df.index <= end_of_window]
-            if not historical_data.empty:
-                rolling_avg_series = historical_data['fanGain'].rolling(f'3h').mean()
-                if not rolling_avg_series.empty and pd.notna(rolling_avg_series.iloc[-1]):
-                    lagged_avg_gain = rolling_avg_series.iloc[-1]
-                else:
-                    lagged_avg_gain = 0
-            else:
-                lagged_avg_gain = 0
         else:
             # Normal operation
-            lagged_avg_gain = get_lagged_average(enriched_df, name, market_state, run_timestamp)       
+            lagged_avg_gain = get_lagged_average(enriched_df, name, market_state, run_timestamp) 
         
-        lagged_avg_gain = get_lagged_average(enriched_df, name, market_state, run_timestamp)
         stochastic_jitter = np.random.normal(1.0, 0.08)
         
         performance_value = (lagged_avg_gain / 8757) * club_sentiment * stochastic_jitter

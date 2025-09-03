@@ -21,7 +21,7 @@ templates_dir = "dataGet/imgToFind/clubMembers"
 # list of members in order they appear in the club info page, used to load club member images and find their coordinates
 clubMembers = [
     "CashBaggins",
-    "Top",
+    # "Top",
     "WaveofGratitude",
     "GhostlyInsomnia",
     "Kino",
@@ -35,8 +35,8 @@ clubMembers = [
     "Epidemic",
     "Gearras",
     "SmillBisser",
-    "StarLight",
-    "cinciol",
+    # "StarLight",
+    # "cinciol",
     "Iyy",
     "Walzy",
     "Keyevin",
@@ -49,7 +49,9 @@ clubMembers = [
     "AO",
     "s",
     "Kurumi",
-    "Kei"
+    "Kei",
+    "Nice",
+    "g",
 ]
 clubMemberTemplateImageFileNames = [os.path.join(templates_dir, f"clubMember{name}.png") for name in clubMembers]
 
