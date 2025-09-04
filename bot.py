@@ -307,6 +307,75 @@ async def award_cc_error(ctx, error):
     # This is a fallback for other potential errors with the command
     await ctx.send(f"An unexpected error occurred: {error}")
 
+@bot.command(name="remove_cc")
+@commands.check(is_admin)
+async def remove_cc(ctx, member: str, amount: int):
+    """(Admin Only) Removes a specified amount of CC from a member."""
+    admin_id = str(ctx.author.id)
+
+    # --- 1. Input Validation ---
+    if amount <= 0:
+        return await ctx.send("Please enter a positive whole number for the amount to remove.", ephemeral=True)
+
+    # --- 2. Find User in the Database ---
+    target_user = database.get_user_details_by_identifier(member)
+    if not target_user:
+        return await ctx.send(f"Could not find a member or ticker named '{member}'.", ephemeral=True)
+    
+    target_id = target_user['discord_id']
+    target_name = target_user['ingamename']
+
+    # --- 3. Execute the Database Transaction ---
+    # This new function safely handles the removal and logging.
+    new_balance = database.execute_admin_removal(
+        admin_id=admin_id,
+        target_id=target_id,
+        amount=amount
+    )
+
+    if new_balance is None:
+        return await ctx.send("The transaction failed. The user may not have enough CC, or a database error occurred. Please check the logs.", ephemeral=True)
+        
+    # --- 4. Confirmation ---
+    embed = discord.Embed(
+        title="✅ CC Removed Successfully",
+        description=f"You have removed **{format_cc(amount)}** from **{target_name}**.",
+        color=discord.Color.orange() # A different color to distinguish from awards
+    )
+    embed.set_footer(text=f"Their new balance is {format_cc(new_balance)}.")
+    await ctx.send(embed=embed)
+
+@remove_cc.error
+async def remove_cc_error(ctx, error):
+    # This uses the same error handling as your award_cc command for non-admins.
+    if isinstance(error, commands.CheckFailure):
+        member_who_failed = ctx.author
+        
+        file1 = discord.File("gifs/notalking.gif", filename="notalking.gif")
+        file2 = discord.File("gifs/banned.gif", filename="banned.gif")
+        files_to_send = [file1, file2]
+
+        embed = discord.Embed(
+            title="🚨 Permission Denied 🚨",
+            description=f"{member_who_failed.mention} has been put in TIMEOUT for trying to use an admin command. This is a dictatorship.",
+            color=discord.Color.red()
+        )
+        embed.set_image(url="attachment://banned.gif")
+        embed.set_thumbnail(url="attachment://notalking.gif")
+        
+        duration = timedelta(minutes=5)
+        reason = "Unauthorized use of an admin command."
+        
+        try:
+            await member_who_failed.timeout(duration, reason=reason)
+            embed.add_field(name="Action Taken", value=f"User has been timed out for {duration.seconds // 60} minutes.")
+        except discord.Forbidden:
+            embed.add_field(name="Action Failed", value="I don't have permission to take action against this user.")
+        
+        await ctx.send(embed=embed, files=files_to_send)
+        return
+
+    await ctx.send(f"An unexpected error occurred: {error}")
 
 
 def get_inGameName(discord_id):
@@ -1191,7 +1260,7 @@ async def market(ctx):
 
 @bot.command(name="stock")
 async def stock(ctx, *, identifier: str):
-    """Displays detailed information and a price chart for a given stock."""
+    """Displays detailed information and a price chart for a given stock with 24h, 7d, and all-time views."""
     stock_info, history_df, top_holders_df = database.get_stock_details(identifier)
     
     if not stock_info:
@@ -1200,30 +1269,30 @@ async def stock(ctx, *, identifier: str):
     ingamename = stock_info['ingamename']
     current_price = float(stock_info['current_price'])
     
-    # --- Calculations ---
-    price_24h_ago = current_price
-    all_time_high = current_price
-    all_time_low = current_price
-
+    # --- Prepare historical data ---
     if not history_df.empty:
-        # --- THIS IS THE FIX ---
-        # By adding errors='coerce', we force any non-numeric strings (like "NaN")
-        # into a proper, workable NaN value that pandas can handle.
         history_df['price'] = pd.to_numeric(history_df['price'], errors='coerce')
-        # --- END FIX ---
-
         history_df['timestamp'] = pd.to_datetime(history_df['timestamp'])
-        
-        past_prices = history_df[history_df['timestamp'] < (datetime.now(pytz.utc) - timedelta(days=1))]
-        if not past_prices.empty:
-            price_24h_ago = float(past_prices['price'].iloc[-1])
-        
-        all_time_high = history_df['price'].max()
-        all_time_low = history_df['price'].min()
-
-    price_change = current_price - price_24h_ago
-    percent_change = (price_change / price_24h_ago) * 100 if price_24h_ago > 0 else 0
     
+    now = datetime.now(pytz.utc)
+    history_24h = history_df[history_df['timestamp'] >= now - timedelta(days=1)]
+    history_7d = history_df[history_df['timestamp'] >= now - timedelta(days=7)]
+    history_3d = history_df[history_df['timestamp'] >= now - timedelta(days=3)]
+    history_all = history_df
+
+    def timeframe_stats(df, default_price):
+        if df.empty:
+            return default_price, default_price, default_price
+        return df['price'].iloc[0], df['price'].max(), df['price'].min()
+
+    price_24h, high_24h, low_24h = timeframe_stats(history_24h, current_price)
+    price_7d, high_7d, low_7d = timeframe_stats(history_7d, current_price)
+    all_time_high = history_all['price'].max() if not history_all.empty else current_price
+    all_time_low = history_all['price'].min() if not history_all.empty else current_price
+
+    price_change_24h = current_price - price_24h
+    percent_change_24h = (price_change_24h / price_24h) * 100 if price_24h > 0 else 0
+
     market_snapshot, _ = database.get_market_snapshot()
     market_cap = 0
     if market_snapshot is not None:
@@ -1237,7 +1306,7 @@ async def stock(ctx, *, identifier: str):
     stats_text = (
         f"```\n"
         f"Current Price:   {current_price:,.2f} CC\n"
-        f"Today's Change:  {'+' if price_change >= 0 else ''}{price_change:,.2f} CC ({'+' if percent_change >= 0 else ''}{percent_change:.2f}%)\n"
+        f"24h Change:      {'+' if price_change_24h >= 0 else ''}{price_change_24h:,.2f} CC ({'+' if percent_change_24h >= 0 else ''}{percent_change_24h:.2f}%)\n"
         f"All-Time High:   {all_time_high:,.2f} CC\n"
         f"All-Time Low:    {all_time_low:,.2f} CC\n"
         f"Market Cap:      {format_cc(market_cap)}\n"
@@ -1245,7 +1314,6 @@ async def stock(ctx, *, identifier: str):
     )
     embed.add_field(name="📊 Key Statistics", value=stats_text, inline=False)
     
-    # ... (The rest of your command remains exactly the same)
     holders_text = "```\n"
     if not top_holders_df.empty:
         for i, holder in top_holders_df.iterrows():
@@ -1265,28 +1333,66 @@ async def stock(ctx, *, identifier: str):
         footer_text = f"Your Position: You own {shares_owned:.2f} shares with a P/L of {format_cc(pl)} ({'+' if pl_percent >= 0 else ''}{pl_percent:.1f}%)."
         embed.set_footer(text=footer_text)
 
-    if not history_df.empty and len(history_df) > 1 and pd.api.types.is_datetime64_any_dtype(history_df['timestamp']):
+    # --- Plotting function ---
+    def plot_price(df, title):
         plt.style.use('dark_background')
         fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(history_df['timestamp'], history_df['price'], color='#00FF00', linewidth=2)
-        
-        ax.set_title(f'{ingamename} Price History', color='white')
+        ax.plot(df['timestamp'], df['price'], color='#00FF00', linewidth=2)
+        ax.set_title(title, color='white')
         ax.set_ylabel('Price (CC)', color='white')
         ax.tick_params(axis='x', colors='white', rotation=15)
         ax.tick_params(axis='y', colors='white')
         ax.grid(True, which='both', linestyle='--', linewidth=0.5, color='gray')
         fig.tight_layout()
-        
         buf = io.BytesIO()
         plt.savefig(buf, format='png', transparent=True)
         buf.seek(0)
         plt.close(fig)
+        return buf
+
+    # --- Send initial embed with all-time chart ---
+    buf = plot_price(history_all, f"{ingamename} Price (All-Time)")
+    file = discord.File(buf, filename="price_chart.png")
+    embed.set_image(url="attachment://price_chart.png")
+    message = await ctx.send(embed=embed, file=file)
+
+    # --- Buttons for timeframe selection ---
+    from discord.ui import View, Button
+
+    class TimeframeView(View):
+        def __init__(self, embed, df_24h, df_3d, df_7d, df_all, ingamename):
+            super().__init__(timeout=120)
+            self.embed = embed
+            self.df_24h = df_24h
+            self.df_3d = df_3d
+            self.df_7d = df_7d
+            self.df_all = df_all
+            self.ingamename = ingamename
+
+        async def update_chart(self, interaction, df, title):
+            buf = plot_price(df, title)
+            file = discord.File(buf, filename="price_chart.png")
+            self.embed.set_image(url="attachment://price_chart.png")
+            await interaction.response.send_message(embed=self.embed, file=file, ephemeral=True)
+
+        @discord.ui.button(label="24h", style=discord.ButtonStyle.blurple)
+        async def show_24h(self, interaction, button):
+            await self.update_chart(interaction, self.df_24h, f"{self.ingamename} Price (Last 24h)")
         
-        file = discord.File(buf, filename="price_chart.png")
-        embed.set_image(url="attachment://price_chart.png")
-        await ctx.send(embed=embed, file=file)
-    else:
-        await ctx.send(embed=embed)
+        @discord.ui.button(label="3d", style=discord.ButtonStyle.blurple)
+        async def show_3d(self, interaction, button):
+            await self.update_chart(interaction, self.df_3d, f"{self.ingamename} Price (Last 3d)")
+
+        @discord.ui.button(label="7d", style=discord.ButtonStyle.blurple)
+        async def show_7d(self, interaction, button):
+            await self.update_chart(interaction, self.df_7d, f"{self.ingamename} Price (Last 7d)")
+
+        @discord.ui.button(label="All-Time", style=discord.ButtonStyle.green)
+        async def show_all(self, interaction, button):
+            await self.update_chart(interaction, self.df_all, f"{self.ingamename} Price (All-Time)")
+
+    view = TimeframeView(embed, history_24h, history_3d, history_7d, history_all, ingamename)
+    await message.edit(view=view)
 
 @bot.command(name="financial_summary")
 async def financial_summary(ctx):
@@ -1777,9 +1883,16 @@ async def invest(ctx, identifier: str, shares_str: str):
         return await ctx.send("You do not have a Fan Exchange account.", ephemeral=True)
 
     # 2. Calculate Trade Details
+    market_state_df = pd.DataFrame(database.get_market_data_from_db()['market_state'])
+    active_event = ""
+    if not market_state_df.empty:
+        market_state = market_state_df.set_index('state_name')['state_value']
+        active_event = str(market_state.get('active_event', 'None'))
+                                
+    invest_tax_rate = 0.005 if active_event == "The Grand Derby" else 0.03
     current_price = float(stock['current_price'])
     subtotal = shares_to_buy * current_price
-    broker_fee = subtotal * 0.03
+    broker_fee = subtotal * invest_tax_rate
     total_cost = subtotal + broker_fee
 
     if float(balance) < total_cost:
@@ -1794,7 +1907,7 @@ async def invest(ctx, identifier: str, shares_str: str):
         f"**Price/Share**: {current_price:,.2f} CC\n"
         f"--------------------------\n"
         f"**Subtotal**: {subtotal:,.2f} CC\n"
-        f"**Broker's Fee (3%)**: {broker_fee:,.2f} CC\n"
+        f"**Broker's Fee ({invest_tax_rate*100:.2f}%)**: {broker_fee:,.2f} CC\n"
         f"**Total Cost**: **{total_cost:,.2f} CC**\n\n"
         f"*Your new balance will be: {new_balance_preview:,.2f} CC*"
     )
@@ -1861,10 +1974,17 @@ async def sell(ctx, identifier: str, shares_str: str):
         return await ctx.send(f"Insufficient shares. You are trying to sell {shares_to_sell:,.4f} but you only own {shares_owned:,.4f} of **{stock['ingamename']}**.", ephemeral=True)
 
     # --- 4. Calculate Trade Details ---
+    market_state_df = pd.DataFrame(database.get_market_data_from_db()['market_state'])
+    active_event = ""
+    if not market_state_df.empty:
+        market_state = market_state_df.set_index('state_name')['state_value']
+        active_event = str(market_state.get('active_event', 'None'))
+    
     balance = database.get_user_balance_by_discord_id(user_id)
     current_price = float(stock['current_price'])
     subtotal = shares_to_sell * current_price
-    broker_fee = subtotal * 0.03
+    sell_tax_rate = 0.50 if active_event == "The Grand Derby" else 0.03
+    broker_fee = subtotal * sell_tax_rate    
     total_proceeds = subtotal - broker_fee
 
     # --- 5. Confirmation UI ---
@@ -1876,7 +1996,7 @@ async def sell(ctx, identifier: str, shares_str: str):
         f"**Price/Share**: {current_price:,.2f} CC\n"
         f"--------------------------\n"
         f"**Gross Proceeds**: {subtotal:,.2f} CC\n"
-        f"**Broker's Fee (3%)**: {broker_fee:,.2f} CC\n"
+        f"**Broker's Fee ({sell_tax_rate*100:.1f}%)**: {broker_fee:,.2f} CC\n"
         f"**Total Proceeds**: **{total_proceeds:,.2f} CC**\n\n"
         f"*Your new balance will be: {new_balance_preview:,.2f} CC*"
     )
