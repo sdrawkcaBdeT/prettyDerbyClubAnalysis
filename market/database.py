@@ -1158,7 +1158,55 @@ def execute_admin_award(admin_id: str, target_id: str, amount: int) -> float | N
 
     return new_balance
 
+def execute_admin_removal(admin_id: str, target_id: str, amount: int) -> float | None:
+    """
+    Atomically removes CC from a user and logs the transaction.
+    Returns the new balance on success, None on failure.
+    """
+    conn = get_connection()
+    if not conn: return None
+    
+    with conn.cursor() as cursor:
+        new_balance = None
+        try:
+            # 1. Lock the row and check if the user has enough balance
+            cursor.execute("SELECT balance FROM balances WHERE discord_id = %s FOR UPDATE;", (target_id,))
+            wallet = cursor.fetchone()
+            if not wallet or wallet[0] < amount:
+                # Optional: You might want to allow balances to go negative for corrections.
+                # If so, you can remove this check.
+                print(f"Admin removal failed: {target_id} has insufficient funds.")
+                conn.rollback()
+                return None
+
+            # 2. Update the user's balance by subtracting the amount
+            cursor.execute("UPDATE balances SET balance = balance - %s WHERE discord_id = %s RETURNING balance;", (amount, target_id))
+            new_balance = cursor.fetchone()[0]
+
+            # 3. Log this action in the universal transaction log
+            log_query = """
+                INSERT INTO transactions 
+                (actor_id, transaction_type, target_id, item_name, cc_amount, balance_after)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """
+            # Note: cc_amount is stored as a negative value to reflect the removal
+            log_values = (admin_id, 'ADMIN_REMOVAL', target_id, 'Admin Discretionary Removal', -amount, new_balance)
+            cursor.execute(log_query, log_values)
+
+            # 4. Commit changes
+            conn.commit()
+            print("✅ Admin removal transaction committed successfully.")
+
+        except Exception as err:
+            print(f"❌ DATABASE ERROR during admin removal: {err}")
+            conn.rollback()
+            return None
+        finally:
+            if conn is not None:
+                conn.close()
+
     return new_balance
+
     
 def get_financial_summary(discord_id: str) -> dict:
     """
