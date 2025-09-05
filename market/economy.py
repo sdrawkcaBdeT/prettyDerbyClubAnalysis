@@ -21,10 +21,14 @@ def get_upgrade_value(upgrades_df, discord_id, upgrade_name, base_value, bonus_p
         return base_value + (tier * bonus_per_tier)
     return base_value
 
-def calculate_hype_bonus(portfolios_df, member_name):
-    """Calculates the Hype Bonus based on shares owned by others."""
+def calculate_hype_bonus(portfolios_df, member_name, member_discord_id):
+    """
+    Calculates the Hype Bonus based on shares owned by others.
+    Excludes shares owned by the member themselves if member_discord_id is provided.
+    """
     shares_owned_by_others = portfolios_df[
-        portfolios_df['stock_inGameName'] == member_name
+        (portfolios_df['stock_inGameName'] == member_name) &
+        (portfolios_df['investor_discord_id'] != member_discord_id)
     ]['shares_owned'].sum()
     
     hype_bonus = 1 + (0.0005 * shares_owned_by_others)
@@ -76,7 +80,7 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
         tenure_yield = tenure_prestige * tenure_multiplier
         base_cc_earned = max(0, performance_yield + tenure_yield)
         
-        hype_bonus_multiplier = calculate_hype_bonus(portfolios_df, inGameName)
+        hype_bonus_multiplier = calculate_hype_bonus(portfolios_df, inGameName, discord_id)
         hype_bonus_yield = base_cc_earned * (hype_bonus_multiplier - 1)
         total_personal_cc_earned = base_cc_earned + hype_bonus_yield
         

@@ -33,7 +33,7 @@ def get_lagged_average(enriched_df, member_name, market_state, run_timestamp, ov
     Calculates the rolling average fan gain from a time-lagged window.
     'override_hours' forces a specific window and bypasses the market lag.
     """
-    avg_hours = override_hours if override_hours is not None else 20
+    avg_hours = override_hours if override_hours is not None else 21
     
     # --- THIS IS THE FIX ---
     # We now check if an override is active. If it is, we set the lag to zero
