@@ -916,17 +916,15 @@ def execute_trade_transaction(
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
             """, (actor_id, target_id, transaction_type, f"{stock_name}'s Stock", shares, total_cost, fee, details, new_balance))
 
-            # --- NEW: LOGIC TO HANDLE THE CENTRAL BANK FEE ---
             if fee > 0:
-                # Add the fee to the central bank's balance
-                cursor.execute("UPDATE central_bank SET balance = balance + %s;", (fee,))
+                # Add the fee to the house_wallet's balance
+                cursor.execute("UPDATE house_wallet SET balance = balance + %s WHERE id = 1;", (fee,))
 
-                # Log the fee collection in the fee_ledger
+                # Log the fee collection in the new house_ledger
                 cursor.execute(
-                    "INSERT INTO fee_ledger (transaction_type, fee_amount) VALUES (%s, %s);",
-                    (transaction_type, fee)
+                    "INSERT INTO house_ledger (transaction_type, net_change, player_id) VALUES (%s, %s, %s);",
+                    (transaction_type, fee, actor_id)
                 )
-            # --- END OF NEW LOGIC ---
 
             conn.commit()
             return new_balance
@@ -1685,6 +1683,125 @@ def flag_prestige_purchases_as_applied(purchase_ids: list):
             conn.rollback()
             return False
     conn.close()
+
+def get_house_balance() -> float:
+    """Fetches the current balance of the house wallet."""
+    conn = get_connection()
+    if not conn:
+        return 0.0
+    
+    balance = 0.0
+    with conn.cursor() as cursor:
+        try:
+            cursor.execute("SELECT balance FROM house_wallet WHERE id = 1;")
+            result = cursor.fetchone()
+            if result:
+                balance = float(result[0])
+        except Exception as e:
+            logging.error(f"Error fetching house balance: {e}")
+    
+    conn.close()
+    return balance
+
+def execute_gambling_transaction(
+    actor_id: str,
+    game_name: str,
+    bet_amount: float,
+    winnings: float,
+    details: dict
+) -> float | None:
+    """
+    Executes a gambling win or loss as a single, atomic transaction against the house_wallet.
+    Returns the new balance on success, None on failure.
+    """
+    conn = get_connection()
+    if not conn:
+        return None
+
+    try:
+        with conn.cursor() as cursor:
+            # 1. Lock the house and player wallets to prevent race conditions.
+            cursor.execute("SELECT balance FROM house_wallet WHERE id = 1 FOR UPDATE;")
+            house_wallet = cursor.fetchone()
+            cursor.execute("SELECT balance FROM balances WHERE discord_id = %s FOR UPDATE;", (actor_id,))
+            player_wallet = cursor.fetchone()
+
+            # 2. Final verification checks
+            if not player_wallet or player_wallet[0] < bet_amount:
+                logging.warning(f"Gambling failed for {actor_id}: insufficient funds at time of execution.")
+                conn.rollback()
+                return None
+            # Check if the house can afford the *net payout*, not the gross winnings.
+            net_payout = winnings - bet_amount
+            if not house_wallet or house_wallet[0] < net_payout:
+                logging.warning(f"Gambling failed for {actor_id}: House has insufficient funds to pay out {winnings}.")
+                conn.rollback()
+                return None
+
+            # 3. Calculate net changes and update balances
+            player_net_change = winnings - bet_amount
+            house_net_change = bet_amount - winnings
+
+            cursor.execute(
+                "UPDATE balances SET balance = balance + %s WHERE discord_id = %s RETURNING balance;",
+                (player_net_change, actor_id)
+            )
+            new_balance = cursor.fetchone()[0]
+            
+            cursor.execute(
+                "UPDATE house_wallet SET balance = balance + %s WHERE id = 1;",
+                (house_net_change,)
+            )
+
+            # 4. Log the transaction in the main player ledger
+            cursor.execute(
+                """
+                INSERT INTO transactions (actor_id, transaction_type, item_name, cc_amount, details, balance_after)
+                VALUES (%s, 'GAMBLE', %s, %s, %s, %s);
+                """,
+                (actor_id, game_name, player_net_change, json.dumps(details), new_balance)
+            )
+            
+            # 5. Log the transaction in the house ledger for auditing
+            cursor.execute(
+                """
+                INSERT INTO house_ledger (transaction_type, game_name, player_id, player_bet, player_winnings, net_change)
+                VALUES (%s, %s, %s, %s, %s, %s);
+                """,
+                ('GAMBLE', game_name, actor_id, bet_amount, winnings, house_net_change)
+            )
+
+            conn.commit()
+            return new_balance
+
+    except Exception as e:
+        logging.error(f"Gambling transaction failed: {e}")
+        conn.rollback()
+        return None
+    finally:
+        # Corrected syntax for the finally block
+        if conn is not None:
+            conn.close()
+
+
+def get_house_balance() -> float:
+    """Fetches the current balance of the house wallet."""
+    conn = get_connection()
+    if not conn:
+        return 0.0
+    
+    balance = 0.0
+    with conn.cursor() as cursor:
+        try:
+            cursor.execute("SELECT balance FROM house_wallet WHERE id = 1;")
+            result = cursor.fetchone()
+            if result:
+                balance = float(result[0])
+        except Exception as e:
+            logging.error(f"Error fetching house balance: {e}")
+    
+    conn.close()
+    return balance
 
 ### Racing Gambling Game Functions ###
 

@@ -89,6 +89,11 @@ SHOP_ITEMS = {
     }
 }
 
+CARD_SUITS = {"Spades": "♠️", "Hearts": "♥️", "Clubs": "♣️", "Diamonds": "♦️"}
+CARD_RANKS = {"2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 11, "Q": 12, "K": 13, "A": 14}
+# The payout multiplier for a winning bet in higher or lower (1.9x creates a house edge)
+PAYOUT_MULTIPLIER = 1.9
+
 # --- NEW: Event Flavor Text ---
 EVENT_FLAVOR_TEXT = {
     "Dark Horse Bargains": "A respected scout has been spotted in the stands, taking a keen interest in some overlooked talent! A few underdog stocks are now available at a surprising discount for the next 24 hours. Could this be the next big thing?",
@@ -1716,6 +1721,21 @@ def format_transaction_details(details: dict, item_name: str, transaction_type: 
         div_type = details.get('type', 'Dividend')
         formatted_string += f"**Source Player**: {source}\n"
         formatted_string += f"**Type**: {div_type}\n"
+    
+    elif transaction_type == 'GAMBLE':
+        formatted_string = f"**Game**: {item_name}\n"
+        formatted_string += f"**Bet**: {details.get('bet', 0):,.2f} CC\n"
+        formatted_string += "---------------------------------\n"
+        formatted_string += f"**Starting Card**: {details.get('starting_card', 'N/A')}\n"
+        formatted_string += f"**Your Choice**: {details.get('choice', 'N/A')}\n"
+        formatted_string += "---------------------------------\n"
+        formatted_string += f"**Next Card**: {details.get('next_card', 'N/A')}\n"
+        formatted_string += f"**Outcome**: {details.get('outcome', 'N/A')}\n"
+        formatted_string += "---------------------------------\n"
+        net_cc = details.get('net_cc', 0)
+        sign = "+" if net_cc >= 0 else ""
+        formatted_string += f"**Net CC**: {sign}{net_cc:,.2f} CC\n"
+        return formatted_string
 
     else:
         # A fallback for any other type with details
@@ -2218,6 +2238,123 @@ async def event_command_error(ctx, error):
     else:
         # Send the actual error message to the channel to help debug.
         await ctx.send(f"An unexpected error occurred: {error}")
+
+class HigherLowerView(discord.ui.View):
+    """An interactive view with buttons for the Higher or Lower game."""
+    def __init__(self, author: discord.User, bet_amount: int, first_card: tuple):
+        super().__init__(timeout=60)
+        self.author = author
+        self.bet_amount = bet_amount
+        self.first_card = first_card
+        self.deck = self._create_deck()
+        self.deck.remove(first_card)
+        self.choice = None
+
+    def _create_deck(self):
+        return [(rank, suit) for rank in CARD_RANKS for suit in CARD_SUITS]
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message("This is not your game! Start one with `/higherlower`.", ephemeral=True)
+            return False
+        return True
+
+    async def resolve_game(self, interaction: discord.Interaction):
+        self.stop()
+        for item in self.children:
+            item.disabled = True
+
+        second_card = random.choice(self.deck)
+        first_val = CARD_RANKS[self.first_card[0]]
+        second_val = CARD_RANKS[second_card[0]]
+
+        outcome = "LOSS" # Default to loss (covers ties)
+        if (self.choice == "HIGHER" and second_val > first_val) or \
+           (self.choice == "LOWER" and second_val < first_val):
+            outcome = "WIN"
+
+        winnings = self.bet_amount * PAYOUT_MULTIPLIER if outcome == "WIN" else 0
+        net_change = winnings - self.bet_amount
+        
+        details = {
+            "bet": self.bet_amount,
+            "starting_card": f"{self.first_card[0]} {CARD_SUITS[self.first_card[1]]}",
+            "choice": self.choice,
+            "next_card": f"{second_card[0]} {CARD_SUITS[second_card[1]]}",
+            "outcome": outcome,
+            "net_cc": net_change,
+        }
+
+        new_balance = database.execute_gambling_transaction(
+            str(self.author.id), "Higher or Lower", self.bet_amount, winnings, details
+        )
+        
+        color = discord.Color.green() if outcome == "WIN" else discord.Color.red()
+        result_text = f"You win! Net gain: **{format_cc(net_change)}**" if outcome == "WIN" else f"You lose. Net loss: **{format_cc(abs(net_change))}**"
+        
+        embed = discord.Embed(title=f"Higher or Lower: {outcome}!", description=result_text, color=color)
+        embed.add_field(name="Starting Card", value=f"**{details['starting_card']}**", inline=True)
+        embed.add_field(name="Next Card", value=f"**{details['next_card']}**", inline=True)
+        if new_balance is not None:
+            embed.set_footer(text=f"Your new balance is {format_cc(new_balance)}")
+        
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Higher", style=discord.ButtonStyle.success)
+    async def higher_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.choice = "HIGHER"
+        await self.resolve_game(interaction)
+
+    @discord.ui.button(label="Lower", style=discord.ButtonStyle.danger)
+    async def lower_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.choice = "LOWER"
+        await self.resolve_game(interaction)
+
+@bot.command(name="higherlower")
+@commands.cooldown(1, 5, commands.BucketType.user)
+async def higherlower(ctx, bet: int):
+    """Play a game of Higher or Lower for CC!"""
+    user_id = str(ctx.author.id)
+
+    if bet <= 100:
+        return await ctx.send("The minimum bet is 101 CC.", ephemeral=True)
+
+    # 1. Get the house balance and determine the max bet
+    house_balance = database.get_house_balance()
+    # Max bet is 35% of the house's current bankroll, with a minimum of 1000 CC.
+    max_bet = max(1000, int(house_balance * 0.35))
+
+    if bet > max_bet:
+        await ctx.send(f"Your bet is too high! The current maximum bet is **{format_cc(max_bet)}**.", ephemeral=True)
+        higherlower.reset_cooldown(ctx) # Reset cooldown on a failed check
+        return
+
+    # 2. Perform a PRELIMINARY balance check for good user experience.
+    # The final, secure check happens in the database transaction.
+    balance = database.get_user_balance_by_discord_id(user_id)
+    if balance is None or balance < bet:
+        await ctx.send(f"You don't have enough CC to make that bet. Your balance is {format_cc(balance)}.", ephemeral=True)
+        higherlower.reset_cooldown(ctx) # Reset cooldown on a failed check
+        return
+
+    # 3. Create the game if all checks pass
+    deck = [(rank, suit) for rank in CARD_RANKS for suit in CARD_SUITS]
+    random.shuffle(deck)
+    first_card = deck.pop()
+    
+    embed = discord.Embed(
+        title=f"{ctx.author.display_name} bets {format_cc(bet)}!",
+        description="Will the next card be higher or lower?",
+        color=discord.Color.blue()
+    )
+    card_str = f"{first_card[0]} {CARD_SUITS[first_card[1]]}"
+    embed.add_field(name="Your Card", value=f"**{card_str}**")
+    embed.set_footer(text="Aces are high. A tie is a loss.")
+
+    view = HigherLowerView(author=ctx.author, bet_amount=bet, first_card=first_card)
+    
+    await ctx.send(embed=embed, view=view)
+
 # ---------------------------------------------
 
 
