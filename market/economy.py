@@ -112,7 +112,6 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
         # 1. Get all shareholders for the current earner
         all_shareholders = portfolios_df[portfolios_df['stock_inGameName'] == inGameName]
 
-        # 2. THE FIX: Immediately filter out the earner themselves.
         #    All subsequent logic will operate on this clean list of external investors.
         external_shareholders = all_shareholders[all_shareholders['investor_discord_id'] != discord_id]
 
