@@ -641,7 +641,7 @@ async def help(ctx):
     embed = discord.Embed(title="TRACKMASTER BOT Help", description="Here are all the commands you can use to track your performance and prestige.", color=discord.Color.blue())
     embed.add_field(name="SETUP (Required)", value="`/register [your-in-game-name]` - Links your Discord account to your exact in-game name. You must do this first!", inline=False)
     embed.add_field(name="PERSONAL STATS", value="`/myprogress` - Get a personalized summary of your progress since you last checked.", inline=False)
-    embed.add_field(name="CLUB CHARTS & REPORTS", value=("`/top10` - Shows the current top 10 members by monthly fan gain.\n" "`/prestige_leaderboard` - Displays the all-time prestige point leaderboard.\n" "`/performance` - Posts the historical fan gain heatmap.\n" "`/log [member_name]` - Gets the detailed performance log for any member."), inline=False)
+    embed.add_field(name="CLUB CHARTS & REPORTS", value=("`/top10` - Shows the current top 10 members by monthly fan gain.\n" "`/alltime_top10` - Shows the current top 10 members by all-time fan gain.\n" "`/prestige_leaderboard` - Displays the all-time prestige point leaderboard.\n" "`/performance` - Posts the historical fan gain heatmap.\n" "`/log [member_name]` - Gets the detailed performance log for any member."), inline=False)
     embed.add_field(name="FAN EXCHANGE (Stock Market)", value=("`/exchange_help` - Provides a concise explanation and startup guide for the Fan Exchange system.\n" "`/market` - Displays the all stocks and some info.\n" "`/portfolio` - View your current stock holdings and their performance.\n" "`/stock [name/ticker]` - Shows the price history and stats for a specific racer.\n" "`/invest [name/ticker] [amount]` - Buy shares in a racer's stock, specifying SHARES to invest.\n" "`/sell [name/ticker] [amount]` - Sell shares of a racer's stock, specifying shares to sell.\n" "`/shop` - See what you can buy with your CC! Earnings upgrades and prestige!" "`/buy [shop_id]` - Purchase something from the shop!" "`/set_ticker [2-5 letter ticker]` - Set your unique stock ticker symbol."), inline=False)
     embed.add_field(name="FINANCIAL REPORTING", value=("`/financial_summary` - Get a high-level overview of your net worth, P/L, and ROI.\n" "`/earnings [7 or 30]` - View a detailed list of your income from earnings and dividends.\n" "`/ledger` - See a complete, paginated history of all your transactions."), inline=False)
     embed.set_footer(text="Remember to use the command prefix '/' before each command.")
@@ -870,6 +870,14 @@ async def top10(ctx):
     timestamp_str = get_last_update_timestamp()
     message = f"{ctx.author.mention} here is the Top 10 Monthly Fan Gain chart!"
     file_path = os.path.join(OUTPUT_DIR, 'monthly_leaderboard.png')
+    await send_to_scoreboard(ctx, message, file_path)
+
+@bot.command()
+async def alltime_top10(ctx):
+    """Posts the alltime_leaderboard.png chart."""
+    timestamp_str = get_last_update_timestamp()
+    message = f"{ctx.author.mention} here is the Top 10 All-Time Fan Gain chart!"
+    file_path = os.path.join(OUTPUT_DIR, 'alltime_leaderboard.png')
     await send_to_scoreboard(ctx, message, file_path)
 
 @bot.command()
