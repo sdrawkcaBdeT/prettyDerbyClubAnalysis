@@ -362,6 +362,28 @@ def get_discord_id_by_name(ingamename: str) -> str:
     conn.close()
     return result[0] if result else None
 
+def get_discord_id_to_ingamename_map() -> dict:
+    """
+    Fetches all users from the balances table and returns a dictionary
+    mapping their discord_id to their ingamename.
+    """
+    conn = get_connection()
+    if not conn:
+        return {}
+    
+    id_map = {}
+    with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+        try:
+            cursor.execute("SELECT discord_id, ingamename FROM balances;")
+            results = cursor.fetchall()
+            # The dictionary comprehension is a clean way to build the map
+            id_map = {str(row['discord_id']): row['ingamename'] for row in results}
+        except Exception as e:
+            logging.error(f"Error fetching discord_id to ingamename map: {e}")
+    
+    conn.close()
+    return id_map
+
 # --- Function to log the price history ---
 def log_stock_price_history(stock_prices_df, run_timestamp):
     """Inserts the current stock prices into the history table with a specific timestamp."""
@@ -1078,6 +1100,53 @@ def execute_purchase_transaction(actor_id: str, item_name: str, cost: float, upg
             return None
     conn.close()
 
+def remove_shop_upgrade(discord_id: str, upgrade_name: str) -> bool:
+    """
+    Removes a specific shop upgrade from a user.
+    Returns True on success, False on failure.
+    """
+    conn = get_connection()
+    if not conn: return False
+
+    success = False
+    with conn.cursor() as cursor:
+        try:
+            cursor.execute(
+                "DELETE FROM shop_upgrades WHERE discord_id = %s AND upgrade_name = %s;",
+                (discord_id, upgrade_name)
+            )
+            # cursor.rowcount will be > 0 if a row was successfully deleted
+            success = cursor.rowcount > 0
+            conn.commit()
+            if success:
+                logging.info(f"Successfully removed upgrade '{upgrade_name}' for user {discord_id}.")
+            else:
+                logging.warning(f"Attempted to remove upgrade '{upgrade_name}' for user {discord_id}, but no such upgrade was found.")
+        except Exception as e:
+            logging.error(f"Error removing shop upgrade: {e}")
+            conn.rollback()
+    conn.close()
+    return success
+
+def get_inGameName_by_discord_id(discord_id: str) -> str | None:
+    """Fetches a user's in-game name using their Discord ID."""
+    conn = get_connection()
+    if not conn:
+        return None
+    
+    in_game_name = None
+    with conn.cursor() as cursor:
+        try:
+            cursor.execute("SELECT ingamename FROM balances WHERE discord_id = %s;", (discord_id,))
+            result = cursor.fetchone()
+            if result:
+                in_game_name = result[0]
+        except Exception as e:
+            logging.error(f"Error fetching in-game name for discord_id {discord_id}: {e}")
+    
+    conn.close()
+    return in_game_name
+
 def get_user_details_by_identifier(identifier: str) -> dict | None:
     """Finds a user's details by their in-game name or ticker."""
     conn = get_connection()
@@ -1105,7 +1174,6 @@ def get_user_details_by_identifier(identifier: str) -> dict | None:
     # Return the user data as a dictionary if found
     return dict(user) if user else None
 
-# In your database.py file
 
 def execute_admin_award(admin_id: str, target_id: str, amount: int) -> float | None:
     """
@@ -1557,6 +1625,66 @@ def get_event_leaderboard_data():
             conn.close()
             
     return leaderboard_df
+
+# --- Functions for Prestige Purchase Ledger ---
+
+def log_prestige_purchase(actor_id: str, amount: float):
+    """Logs a new prestige purchase to the ledger table."""
+    conn = get_connection()
+    if not conn: return False
+    with conn.cursor() as cursor:
+        try:
+            cursor.execute(
+                """INSERT INTO purchased_prestige_ledger (discord_id, prestige_amount)
+                   VALUES (%s, %s);""",
+                (actor_id, amount)
+            )
+            conn.commit()
+            logging.info(f"Successfully logged prestige purchase for {actor_id} of {amount}.")
+            return True
+        except Exception as e:
+            logging.error(f"Failed to log prestige purchase: {e}")
+            conn.rollback()
+            return False
+    conn.close()
+
+def get_unapplied_prestige_purchases() -> pd.DataFrame:
+    """Fetches all prestige purchases that have not yet been applied."""
+    conn = get_connection()
+    if not conn: return pd.DataFrame()
+    query = "SELECT purchase_id, discord_id, prestige_amount FROM purchased_prestige_ledger WHERE is_applied = FALSE;"
+    try:
+        df = pd.read_sql(query, conn)
+    except (Exception, psycopg2.Error) as error:
+        logging.error(f"Error fetching unapplied prestige: {error}")
+        df = pd.DataFrame()
+    finally:
+        if conn is not None:
+            conn.close()
+    return df
+
+def flag_prestige_purchases_as_applied(purchase_ids: list):
+    """Marks a list of prestige purchase IDs as applied."""
+    if not purchase_ids:
+        return True # Nothing to do
+    conn = get_connection()
+    if not conn: return False
+    with conn.cursor() as cursor:
+        try:
+            # Use tuple to make it compatible with SQL IN clause
+            extras.execute_values(
+                cursor,
+                "UPDATE purchased_prestige_ledger SET is_applied = TRUE WHERE purchase_id IN %s;",
+                [(pid,) for pid in purchase_ids]
+            )
+            conn.commit()
+            logging.info(f"Flagged {len(purchase_ids)} prestige purchases as applied.")
+            return True
+        except Exception as e:
+            logging.error(f"Failed to flag prestige purchases: {e}")
+            conn.rollback()
+            return False
+    conn.close()
 
 ### Racing Gambling Game Functions ###
 

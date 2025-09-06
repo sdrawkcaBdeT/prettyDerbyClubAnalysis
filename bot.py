@@ -377,6 +377,43 @@ async def remove_cc_error(ctx, error):
 
     await ctx.send(f"An unexpected error occurred: {error}")
 
+@bot.command(name="remove_upgrade")
+@commands.check(is_admin)
+async def remove_upgrade(ctx, member: discord.Member, upgrade_id: str):
+    """(Admin Only) Removes a specific shop upgrade from a member."""
+    target_id = str(member.id)
+    upgrade_id = upgrade_id.lower()
+
+    # Find the full upgrade name from the SHOP_ITEMS dictionary
+    upgrade_name = None
+    for category in SHOP_ITEMS.values():
+        if upgrade_id in category:
+            upgrade_name = category[upgrade_id]['name']
+            break
+    
+    if not upgrade_name:
+        return await ctx.send(f"Invalid upgrade ID: `{upgrade_id}`.", ephemeral=True)
+
+    # Call the new database function
+    success = database.remove_shop_upgrade(target_id, upgrade_name)
+
+    if success:
+        embed = discord.Embed(
+            title="✅ Upgrade Removed",
+            description=f"Successfully removed the **{upgrade_name}** upgrade from **{member.display_name}**.",
+            color=discord.Color.orange()
+        )
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send(f"Could not remove the upgrade. It's possible **{member.display_name}** doesn't own that upgrade.", ephemeral=True)
+
+@remove_upgrade.error
+async def remove_upgrade_error(ctx, error):
+    if isinstance(error, commands.CheckFailure):
+        await ctx.send("You do not have permission to use this command.", ephemeral=True)
+    else:
+        await ctx.send(f"An error occurred: {error}", ephemeral=True)
+
 
 def get_inGameName(discord_id):
     """Looks up a user's in-game name from the registration file."""
@@ -1001,7 +1038,6 @@ async def buy(ctx, item_id: str):
     if not item_details:
         return await ctx.send("Invalid item ID. Use `/shop` to see available items.", ephemeral=True)
     
-    # --- REFACTORED: Get necessary data from DB ---
     shop_data = database.get_shop_data(user_id)
     if not shop_data:
         return await ctx.send("Could not retrieve your account data.", ephemeral=True)
@@ -1029,32 +1065,26 @@ async def buy(ctx, item_id: str):
     if balance < cost:
         return await ctx.send(f"You need {format_cc(cost)} but only have {format_cc(balance)}.", ephemeral=True)
     
-    # --- REFACTORED: Execute purchase as a single transaction ---
-    # The file lock is no longer needed.
+    # --- Database Transaction for CC Deduction ---
     new_balance = database.execute_purchase_transaction(
         actor_id=user_id, 
         item_name=item_details['name'], 
         cost=cost, 
-        upgrade_tier=new_tier # This will be None for prestige items
+        upgrade_tier=new_tier
     )
 
     if new_balance is not None:
+        # --- LOGIC FOR PRESTIGE ---
         if item_details['type'] == 'prestige':
-            # The purchase is logged, but we still need to manually update the CSV for now
-            # This is a temporary measure until prestige is fully in the DB
-            try:
-                inGameName = database.get_inGameName_by_discord_id(user_id) # Assumes this function exists
-                enriched_df = pd.read_csv('enriched_fan_log.csv')
-                latest_stats = enriched_df[enriched_df['inGameName'] == inGameName].sort_values('timestamp').iloc[-1]
-                new_prestige_row = latest_stats.copy()
-                new_prestige_row['timestamp'] = datetime.now(pytz.timezone('US/Central')).isoformat()
-                new_prestige_row['prestigeGain'] = float(item_details['amount'])
-                new_prestige_row['lifetimePrestige'] += float(item_details['amount'])
-                enriched_df = pd.concat([enriched_df, new_prestige_row.to_frame().T], ignore_index=True)
-                enriched_df.to_csv('enriched_fan_log.csv', index=False)
-            except Exception as e:
-                print(f"CRITICAL: DB purchase succeeded but CSV update for prestige failed: {e}")
-
+            # Instead of updating the CSV, we now log the purchase to our new ledger table.
+            log_success = database.log_prestige_purchase(user_id, item_details['amount'])
+            if not log_success:
+                # This is a critical error state. The user paid but didn't get credit.
+                # Needs manual admin intervention.
+                await ctx.send("CRITICAL ERROR: Your CC was spent, but the prestige purchase could not be logged. Please contact an admin immediately!")
+                return
+        
+        # This success message now applies to both upgrades and prestige
         embed = discord.Embed(title="✅ Purchase Successful!", description=f"You spent **{format_cc(cost)}** on **{item_details['name']}**.", color=discord.Color.green())
         embed.set_footer(text=f"Your new balance is {format_cc(new_balance)}")
         await ctx.send(embed=embed)
@@ -1652,20 +1682,33 @@ def format_transaction_details(details: dict, item_name: str, transaction_type: 
         key_order = [
             ('tenure_yield', 'Tenure Yield'),
             ('performance_yield', 'Performance Yield'),
+            ('base_cc_earned', 'Base CC Earned'),
             ('hype_multiplier', 'Hype Multiplier'),
-            ('hype_bonus_yield', 'Hype Bonus Yield'),
-            ('base_cc_earned', 'Personal CC Earned')
+            ('hype_bonus_yield', 'Hype Bonus Yield')
         ]
         
+        # 2. Calculate the true total, which isn't stored in the details
+        total_earned = details.get('base_cc_earned', 0) + details.get('hype_bonus_yield', 0)
+        
+        # 3. Build the formatted string
         for key, title in key_order:
             if key in details:
                 value = details[key]
+                
+                # Show the subtotal before the hype bonus
                 if key == 'base_cc_earned':
                     formatted_string += "---------------------------------\n"
-                if key == 'hype_multiplier':
-                    formatted_string += f"**{title}**: {value:.2f}x\n" # Not currency
-                else:
                     formatted_string += f"**{title}**: {value:.2f} CC\n"
+                    
+                elif key == 'hype_multiplier':
+                    formatted_string += f"**{title}**: {value:.2f}x\n"
+                
+                else: # Tenure and Performance Yields
+                    formatted_string += f"**{title}**: {value:.2f} CC\n"
+
+        # 4. Add the final, clear total at the end
+        formatted_string += "---------------------------------\n"
+        formatted_string += f"**TOTAL PERSONAL EARNINGS**: {total_earned:.2f} CC\n"
 
     elif transaction_type == 'DIVIDEND':
         # Handles dividends with a clean, simple format
