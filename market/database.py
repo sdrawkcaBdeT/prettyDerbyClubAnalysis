@@ -1371,8 +1371,16 @@ def get_transaction_ledger(discord_id: str) -> pd.DataFrame:
             *,
             -- Step 2: Determine the net effect of each transaction on THIS user's balance.
             CASE
-                WHEN actor_id = %(user_id)s THEN cc_amount -- Standard transactions (buys are negative, sells/earnings are positive)
-                WHEN target_id = %(user_id)s THEN cc_amount -- Awards where the user is the target (always positive)
+                -- NEW RULE: If this is a dividend I GENERATED for someone else (I am the target),
+                -- the effect on my personal balance is zero.
+                WHEN transaction_type = 'DIVIDEND' AND target_id = %(user_id)s THEN 0
+                
+                -- Standard logic for all other cases (buys are negative, sells/earnings are positive)
+                WHEN actor_id = %(user_id)s THEN cc_amount 
+                
+                -- Logic for cases where I am the target (e.g., ADMIN_AWARD)
+                WHEN target_id = %(user_id)s THEN cc_amount 
+                
                 ELSE 0
             END AS balance_effect
         FROM transactions
