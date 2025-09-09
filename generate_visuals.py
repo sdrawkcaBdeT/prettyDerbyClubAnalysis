@@ -393,7 +393,7 @@ def generate_performance_heatmap(historical_df, summary_df, filename, generated_
     ax1.tick_params(axis='y', rotation=0, labelsize=13)
 
     # Bottom Heatmap (Pacing)
-    sns.heatmap(data_to_plot.iloc[-2:] / 1000, ax=ax2, annot=formatted_data.iloc[-2:], fmt="s", cmap="Blues", cbar=False, linewidths=.5, linecolor='lightgray', annot_kws={"size": 14})
+    sns.heatmap(data_to_plot.iloc[-2:] / 1000, ax=ax2, annot=formatted_data.iloc[-2:], fmt="s", cmap="Blues", cbar=False, linewidths=.5, linecolor='lightgray', annot_kws={"size": 12})
     ax2.set_ylabel('')
     ax2.set_xlabel('')
     ax2.set_xticklabels([])
