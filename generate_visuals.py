@@ -332,6 +332,9 @@ def generate_performance_heatmap(historical_df, summary_df, filename, generated_
     labels = ['Ranks 1-6', 'Ranks 7-12', 'Ranks 13-18', 'Ranks 19-24', 'Ranks 25-30']
     historical_df['Rank Group'] = pd.cut(historical_df['rank'], bins=bins, labels=labels, right=True)
 
+    # --- Filter data to the current month window ---
+    historical_df = historical_df[(historical_df['timestamp'] >= start_date) & (historical_df['timestamp'] <= end_date)].copy()
+
     # Create Club and Rank data pivot table
     club_total = historical_df.groupby('time_group')['fanGain'].sum()
     rank_groups = historical_df.groupby(['time_group', 'Rank Group'], observed=True)['fanGain'].sum().unstack()
@@ -339,18 +342,29 @@ def generate_performance_heatmap(historical_df, summary_df, filename, generated_
 
 
     # --- Pacing Calculations ---
+    # "This Window Proj." calculation
     cumulative_gain_before = club_total.cumsum().shift(1).fillna(0)
     time_since_start_before = (club_total.index - start_date).total_seconds() / 3600
     cumulative_rate_before = (cumulative_gain_before / time_since_start_before).where(time_since_start_before > 0, 0)
-
-    cumulative_gain_through = club_total.cumsum()
-    time_since_start_through = (club_total.index + pd.Timedelta(hours=8) - start_date).total_seconds() / 3600
-    cumulative_rate_through = (cumulative_gain_through / time_since_start_through).where(time_since_start_through > 0, 0)
-
-    total_month_hours = (end_date - start_date).total_seconds() / 3600
-
     projected_window_gain = (cumulative_rate_before * 8).rename("This Window Proj.")
-    projected_eom_gain = (cumulative_rate_through * total_month_hours).rename("End-of-Month Proj.")
+
+    # "End-of-Month Proj." calculation (new, corrected logic)
+    if not club_total.empty:
+        cumulative_gain_through = club_total.cumsum()
+
+        last_update_ts = historical_df['timestamp'].max()
+        end_of_window_timestamps = club_total.index + pd.Timedelta(hours=8)
+        actual_end_timestamps = end_of_window_timestamps.where(end_of_window_timestamps < last_update_ts, last_update_ts)
+
+        time_elapsed_hrs = (actual_end_timestamps - start_date).total_seconds() / 3600
+        time_remaining_hrs = (end_date - actual_end_timestamps).total_seconds() / 3600
+
+        fans_per_hour = (cumulative_gain_through / time_elapsed_hrs).where(time_elapsed_hrs > 0, 0).fillna(0)
+        projected_eom_gain = (cumulative_gain_through + (fans_per_hour * time_remaining_hrs)).rename("End-of-Month Proj.")
+    else:
+        # Handle case with no data in the period
+        projected_eom_gain = pd.DataFrame(columns=data_to_plot.columns, index=["End-of-Month Proj."]).fillna(0)
+
 
     data_to_plot = pd.concat([data_to_plot, pd.DataFrame(projected_window_gain).T, pd.DataFrame(projected_eom_gain).T])
 
@@ -438,6 +452,69 @@ def generate_contribution_chart(contribution_df, last_updated_str, generated_str
     plt.savefig(os.path.join(OUTPUT_DIR, 'fan_contribution_by_rank.png'))
     plt.close(fig)
     print("  - Saved fan_contribution_by_rank.png")
+
+
+def generate_24hr_update_log(individual_log_df, generated_str, last_updated_str):
+    """Generates a log of all fan gains across the club in the last 24 hours."""
+    print("  - Generating 24-hour fan gain log...")
+
+    # --- 1. Data Filtering ---
+    if not pd.api.types.is_datetime64_any_dtype(individual_log_df['timestamp']):
+        individual_log_df['timestamp'] = pd.to_datetime(individual_log_df['timestamp'])
+
+    last_update_time = individual_log_df['timestamp'].max()
+    twenty_four_hours_ago = last_update_time - pd.Timedelta(hours=24)
+
+    recent_gains_df = individual_log_df[
+        (individual_log_df['timestamp'] >= twenty_four_hours_ago) &
+        (individual_log_df['fanGain'] != 0)
+    ].copy()
+
+    if recent_gains_df.empty:
+        print("  - No fan gains in the last 24 hours. Skipping visual.")
+        return
+
+    recent_gains_df.sort_values('timestamp', ascending=False, inplace=True)
+
+    # --- 2. Image Generation ---
+    num_rows = len(recent_gains_df)
+    fig_height = max(6, num_rows * 0.35)
+    fig, ax = plt.subplots(figsize=(10, fig_height))
+    fig.patch.set_facecolor('#2E2E2E')
+    ax.set_facecolor('#2E2E2E')
+    ax.set_title(f"Live Fan Gains (Last 24 Hours) | Updated: {last_updated_str}", color='white', loc='left', pad=20, fontproperties=rankfont, fontsize=16)
+
+    # --- 3. Table Headers ---
+    headers = ['Timestamp (CT)', 'Member', 'Fan Gain']
+    header_positions = [0.01, 0.45, 0.85]
+
+    for i, header in enumerate(headers):
+        ax.text(header_positions[i], 0.97, header, color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top', ha='left')
+
+    # --- 4. Table Rows ---
+    y_pos = 0.95
+    row_height = 1 / (num_rows + 3)
+
+    for _, row in recent_gains_df.iterrows():
+        hour = row['timestamp'].strftime('%I').lstrip('0') or '12'
+        timestamp_str = f"{hour}:{row['timestamp'].strftime('%M %p %m/%d')}"
+        member_name = row['inGameName']
+        gain_val = row['fanGain']
+        gain_str = f"+{int(gain_val):,}" if gain_val > 0 else f"{int(gain_val):,}"
+        gain_color = '#4CAF50' if gain_val > 0 else '#F44336'
+
+        ax.text(header_positions[0], y_pos, timestamp_str, color='#E0E0E0', fontsize=12, transform=ax.transAxes, va='top', ha='left')
+        ax.text(header_positions[1], y_pos, member_name, color='#E0E0E0', fontsize=12, transform=ax.transAxes, va='top', ha='left')
+        ax.text(header_positions[2], y_pos, gain_str, color=gain_color, fontsize=12, weight='bold', transform=ax.transAxes, va='top', ha='left')
+
+        y_pos -= row_height
+
+    # --- 5. Final Touches ---
+    add_timestamps_to_fig(fig, generated_str)
+    ax.axis('off')
+    plt.savefig(os.path.join(OUTPUT_DIR, "update_log_24hr.png"), bbox_inches='tight', pad_inches=0.3, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print("  - Saved update_log_24hr.png")
 
 
 def generate_log_image(member_data_df, title, filename, generated_str, limit = 31, is_club_log=False):
@@ -829,6 +906,7 @@ def main():
     
     save_all_member_logs()
     save_top10()
+    generate_24hr_update_log(individual_log_df, generated_str, last_updated_str)
     
     print("--- 3. Generating Visuals and Reports ---")
     create_all_visuals(
