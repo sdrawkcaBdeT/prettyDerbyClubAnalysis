@@ -705,6 +705,7 @@ async def help(ctx):
     embed.add_field(name="CLUB CHARTS & REPORTS", value=("`/top10` - Shows the current top 10 members by monthly fan gain.\n" "`/alltime_top10` - Shows the current top 10 members by all-time fan gain.\n" "`/prestige_leaderboard` - Displays the all-time prestige point leaderboard.\n" "`/performance` - Posts the historical fan gain heatmap.\n" "`/log [member_name]` - Gets the detailed performance log for any member.\n" "`/livegains` - Shows a log of all fan gains across the club in the last 24 hours."), inline=False)
     embed.add_field(name="FAN EXCHANGE (Stock Market)", value=("`/exchange_help` - Provides a concise explanation and startup guide for the Fan Exchange system.\n" "`/market` - Displays the all stocks and some info.\n" "`/portfolio` - View your current stock holdings and their performance.\n" "`/stock [name/ticker]` - Shows the price history and stats for a specific racer.\n" "`/invest [name/ticker] [amount]` - Buy shares in a racer's stock, specifying SHARES to invest.\n" "`/sell [name/ticker] [amount]` - Sell shares of a racer's stock, specifying shares to sell.\n" "`/shop` - See what you can buy with your CC! Earnings upgrades and prestige!" "`/buy [shop_id]` - Purchase something from the shop!" "`/set_ticker [2-5 letter ticker]` - Set your unique stock ticker symbol."), inline=False)
     embed.add_field(name="FINANCIAL REPORTING", value=("`/financial_summary` - Get a high-level overview of your net worth, P/L, and ROI.\n" "`/earnings [7 or 30]` - View a detailed list of your income from earnings and dividends.\n" "`/ledger` - See a complete, paginated history of all your transactions."), inline=False)
+    embed.add_field(name="UTILITY & SOCIAL", value="`/compare [member1] [member2]` - Puts two members' key stats side-by-side for easy comparison.\n`/whos_hot` - Shows the top 5 trending stocks over the last 3 days.\n`/gift_cc [member] [amount]` - Give another member some of your CC (5% fee).", inline=False)
     embed.add_field(name="GAMBA", value=("`/higherlower [betamount]` - - Play a game of Higher or Lower! Bet your CC and guess if the next card will be higher or lower than the one shown. Aces are high and ties are a loss."), inline=False)
     embed.set_footer(text="Remember to use the command prefix '/' before each command.")
     await ctx.send(embed=embed, ephemeral=True)
@@ -985,6 +986,214 @@ async def livegains(ctx):
     message = f"{ctx.author.mention} here is the live fan gain log for the last 24 hours!"
     file_path = os.path.join(OUTPUT_DIR, 'update_log_24hr.png')
     await send_to_scoreboard(ctx, message, file_path)
+
+@bot.command(name="compare")
+async def compare(ctx, member1: str, member2: str):
+    """Provides a side-by-side comparison of two members."""
+
+    async def get_member_stats(identifier: str):
+        """Helper function to fetch all stats for a single member."""
+        # 1. Get basic user details
+        user_details = database.get_user_details_by_identifier(identifier)
+        if not user_details:
+            return None, f"Could not find a member or ticker for '{identifier}'."
+
+        ingamename = user_details['ingamename']
+
+        # 2. Get stock and market details
+        stock_info, _, _ = database.get_stock_details(ingamename)
+        if not stock_info:
+            return None, f"Could not retrieve stock details for {ingamename}."
+
+        market_snapshot, _ = database.get_market_snapshot()
+        if market_snapshot is None:
+            return None, "Market snapshot is currently unavailable."
+
+        stock_market_info = market_snapshot[market_snapshot['ingamename'] == ingamename]
+        market_cap = stock_market_info['market_cap'].iloc[0] if not stock_market_info.empty else 0
+        price_24h_ago = stock_market_info['price_24h_ago'].iloc[0] if not stock_market_info.empty else stock_info['current_price']
+
+        price_change = stock_info['current_price'] - price_24h_ago
+        percent_change = (price_change / price_24h_ago) * 100 if price_24h_ago > 0 else 0
+
+        # 3. Get prestige details from CSV
+        try:
+            enriched_df = pd.read_csv(ENRICHED_FAN_LOG_CSV)
+            enriched_df['timestamp'] = pd.to_datetime(enriched_df['timestamp'])
+            latest_stats = enriched_df.loc[enriched_df[enriched_df['inGameName'] == ingamename]['timestamp'].idxmax()]
+            monthly_prestige = latest_stats['monthlyPrestige']
+            lifetime_prestige = latest_stats['lifetimePrestige']
+        except (FileNotFoundError, KeyError, ValueError):
+            monthly_prestige = 'N/A'
+            lifetime_prestige = 'N/A'
+
+        # 4. Assemble stats
+        stats = {
+            "name": f"{ingamename} (${stock_info.get('ticker', '')})",
+            "Price": f"{stock_info['current_price']:,.2f} CC",
+            "24h Change": f"{'+' if percent_change >= 0 else ''}{percent_change:.2f}%",
+            "Market Cap": format_cc(market_cap),
+            "Monthly Prestige": f"{monthly_prestige:,.2f}" if isinstance(monthly_prestige, (int, float)) else "N/A",
+            "Lifetime Prestige": f"{lifetime_prestige:,.2f}" if isinstance(lifetime_prestige, (int, float)) else "N/A"
+        }
+        return stats, None
+
+    # Fetch stats for both members
+    stats1, error1 = await get_member_stats(member1)
+    if error1:
+        await ctx.send(error1, ephemeral=True)
+        return
+
+    stats2, error2 = await get_member_stats(member2)
+    if error2:
+        await ctx.send(error2, ephemeral=True)
+        return
+
+    # Build the embed
+    embed = discord.Embed(title=f"Comparison: {stats1['name']} vs. {stats2['name']}", color=discord.Color.purple())
+
+    # Member 1 Field
+    field1_value = ""
+    for key, value in stats1.items():
+        if key != 'name':
+            field1_value += f"**{key}**: {value}\n"
+    embed.add_field(name=stats1['name'], value=field1_value, inline=True)
+
+    # Member 2 Field
+    field2_value = ""
+    for key, value in stats2.items():
+        if key != 'name':
+            field2_value += f"**{key}**: {value}\n"
+    embed.add_field(name=stats2['name'], value=field2_value, inline=True)
+
+    await ctx.send(embed=embed)
+
+@bot.command(name="whos_hot")
+async def whos_hot(ctx, days: int = 3):
+    """Displays the top 5 trending stocks over a given number of days."""
+    if days <= 0:
+        return await ctx.send("Please enter a positive number of days.", ephemeral=True)
+
+    trending_stocks_df = database.get_trending_stocks(days=days)
+
+    if trending_stocks_df.empty:
+        return await ctx.send(f"Could not retrieve trending stock data for the last {days} days.", ephemeral=True)
+
+    top_5 = trending_stocks_df.head(5)
+
+    embed = discord.Embed(
+        title=f"🔥 Who's Hot? Top 5 Movers (Last {days} Days) 🔥",
+        description="These stocks have the highest percentage price increase over the period.",
+        color=discord.Color.orange()
+    )
+
+    if top_5.empty:
+        embed.description = "No significant stock movement in the last {days} days."
+    else:
+        for index, row in top_5.iterrows():
+            ticker = f"(${row['ticker']})" if pd.notna(row['ticker']) else ""
+            name = f"**{row['ingamename']}** {ticker}"
+
+            change_str = f"{'+' if row['percent_change'] >= 0 else ''}{row['percent_change']:.2f}%"
+            value = (f"**Change**: {change_str}\n"
+                     f"**Current Price**: {format_cc(row['current_price'])}")
+
+            embed.add_field(name=name, value=value, inline=False)
+
+    await ctx.send(embed=embed)
+
+@bot.command(name="gift_cc")
+async def gift_cc(ctx, member: str, amount: int):
+    """Gifts a specified amount of CC to another member, with a 5% fee."""
+    sender_id = str(ctx.author.id)
+
+    # 1. Input Validation
+    if amount <= 0:
+        return await ctx.send("You must gift a positive amount of CC.", ephemeral=True)
+
+    receiver_details = database.get_user_details_by_identifier(member)
+    if not receiver_details:
+        return await ctx.send(f"Could not find a member or ticker for '{member}'.", ephemeral=True)
+
+    receiver_id = receiver_details['discord_id']
+    receiver_name = receiver_details['ingamename']
+
+    if sender_id == receiver_id:
+        return await ctx.send("You cannot gift CC to yourself.", ephemeral=True)
+
+    # 2. Calculate Fee and Total
+    fee = amount * 0.05
+    total_cost = amount + fee
+
+    # 3. Preliminary Balance Check (final check is in the DB function)
+    sender_balance = database.get_user_balance_by_discord_id(sender_id)
+    if sender_balance is None or sender_balance < total_cost:
+        return await ctx.send(
+            f"Insufficient funds. You need **{format_cc(total_cost)}** (including a {format_cc(fee)} fee) to send this gift, but your balance is only {format_cc(sender_balance)}.",
+            ephemeral=True
+        )
+
+    # 4. Confirmation View
+    class GiftConfirmationView(discord.ui.View):
+        def __init__(self, *, timeout=30):
+            super().__init__(timeout=timeout)
+            self.confirmed = None
+
+        async def interaction_check(self, interaction: discord.Interaction) -> bool:
+            if interaction.user.id != ctx.author.id:
+                await interaction.response.send_message("This is not your gift to confirm.", ephemeral=True)
+                return False
+            return True
+
+        @discord.ui.button(label='Confirm Gift', style=discord.ButtonStyle.green)
+        async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            self.confirmed = True
+            for item in self.children:
+                item.disabled = True
+            await interaction.response.edit_message(content="💸 Sending your gift...", view=self)
+            self.stop()
+
+        @discord.ui.button(label='Cancel', style=discord.ButtonStyle.red)
+        async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            self.confirmed = False
+            for item in self.children:
+                item.disabled = True
+            await interaction.response.edit_message(content="Gift cancelled.", view=self)
+            self.stop()
+
+    embed = discord.Embed(
+        title="🎁 Gift Confirmation",
+        description=f"You are about to send **{format_cc(amount)}** to **{receiver_name}**.",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="Transaction Fee (5%)", value=format_cc(fee), inline=False)
+    embed.add_field(name="Total Cost to You", value=format_cc(total_cost), inline=False)
+    embed.set_footer(text="Please confirm you want to proceed.")
+
+    view = GiftConfirmationView()
+    await ctx.send(embed=embed, view=view, ephemeral=True)
+    await view.wait()
+
+    # 5. Execute Transaction
+    if view.confirmed:
+        new_balance = database.execute_gift_transaction(
+            sender_id=sender_id,
+            receiver_id=receiver_id,
+            receiver_name=receiver_name,
+            amount=amount,
+            fee=fee
+        )
+
+        if new_balance is not None:
+            await ctx.send(f"✅ Gift sent! You gave **{format_cc(amount)}** to **{receiver_name}**. Your new balance is {format_cc(new_balance)}.", ephemeral=True)
+            # Optionally, send a DM to the receiver
+            try:
+                receiver_user = await bot.fetch_user(int(receiver_id))
+                await receiver_user.send(f"🎁 You received a gift of **{format_cc(amount)}** from **{ctx.author.display_name}**!")
+            except (discord.Forbidden, discord.NotFound):
+                pass # Can't send DM, but the transaction succeeded.
+        else:
+            await ctx.send("❌ Gift failed. This could be due to a change in your balance. Please try again.", ephemeral=True)
 
 
 # --- Fan Exchange Commands ---
