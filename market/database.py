@@ -1512,6 +1512,188 @@ def get_financial_summary(discord_id: str) -> dict:
     return summary
 
 
+def get_wealth_leaderboard():
+    """
+    Calculates the financial summary for all users and returns it as a leaderboard,
+    sorted by net worth.
+    """
+    conn = get_connection()
+    if not conn:
+        return pd.DataFrame()
+
+    query = """
+    WITH PortfolioValues AS (
+        -- Calculate the current total value of each user's stock holdings.
+        SELECT
+            p.investor_discord_id,
+            COALESCE(SUM(p.shares_owned * s.current_price), 0) AS total_stock_value
+        FROM portfolios p
+        JOIN stock_prices s ON p.stock_ingamename = s.ingamename
+        GROUP BY p.investor_discord_id
+    )
+    -- Join balances with portfolio values to calculate total net worth.
+    SELECT
+        b.discord_id,
+        b.ingamename,
+        (b.balance + COALESCE(pv.total_stock_value, 0)) AS net_worth,
+        b.balance AS cc_balance,
+        COALESCE(pv.total_stock_value, 0) AS share_value
+    FROM balances b
+    LEFT JOIN PortfolioValues pv ON b.discord_id = pv.investor_discord_id
+    ORDER BY net_worth DESC;
+    """
+    df = pd.DataFrame()
+    try:
+        df = pd.read_sql(query, conn)
+        # Format the columns for display
+        if not df.empty:
+            df['net_worth'] = df['net_worth'].map('{:,.0f} CC'.format)
+            df['cc_balance'] = df['cc_balance'].map('{:,.0f} CC'.format)
+            df['share_value'] = df['share_value'].map('{:,.0f} CC'.format)
+    except (Exception, psycopg2.Error) as error:
+        logging.error(f"Error fetching wealth leaderboard: {error}")
+    finally:
+        if conn is not None:
+            conn.close()
+
+    return df
+
+
+def get_financial_flows_for_users(discord_ids: list, days: int = None):
+    """
+    Calculates a summary of all financial inflows and outflows for a list of users
+    over a specified number of days. Returns a DataFrame.
+    """
+    conn = get_connection()
+    if not conn:
+        return pd.DataFrame()
+
+    query = """
+        SELECT t.actor_id, b.ingamename, t.transaction_type, t.cc_amount, t.fee_paid, t.item_quantity, t.item_name, t.timestamp
+        FROM transactions t
+        JOIN balances b ON t.actor_id = b.discord_id
+        WHERE t.actor_id = ANY(%(discord_ids)s)
+    """
+    time_clause = ""
+    if days:
+        time_clause = " AND t.timestamp >= NOW() - INTERVAL '%(days)s days'"
+        query += time_clause
+
+    try:
+        df = pd.read_sql(query, conn, params={'discord_ids': discord_ids, 'days': days})
+        if df.empty:
+            return pd.DataFrame()
+
+        # --- Pivot and aggregate simple flows ---
+        flows_df = df.pivot_table(index='ingamename', columns='transaction_type', values='cc_amount', aggfunc='sum').fillna(0)
+
+        # --- Calculate complex/combined flows ---
+        fees_paid = df.groupby('ingamename')['fee_paid'].sum().fillna(0)
+        flows_df['Fees Paid'] = -fees_paid
+
+        flows_df = flows_df.rename(columns={
+            'PERIODIC_EARNINGS': 'Personal CC Gain', 'DIVIDEND': 'Dividend Gain', 'GAMBLE': 'Gambling Net',
+            'GIFT_RECEIVED': 'Gifts Received', 'GIFT_SENT': 'Gifts Given', 'PURCHASE': 'Upgrade Expense'
+        })
+
+        flows_df['Net Admin'] = flows_df.get('ADMIN_AWARD', 0) + flows_df.get('ADMIN_REMOVAL', 0)
+        flows_df['Gift Net'] = flows_df.get('Gifts Received', 0) + flows_df.get('Gifts Given', 0)
+
+        # --- Realized Earnings ---
+        sell_transactions = df[df['transaction_type'] == 'SELL'].copy()
+        realized_earnings = {ingamename: 0 for ingamename in flows_df.index}
+
+        if not sell_transactions.empty:
+            invest_query = "SELECT actor_id, item_name, cc_amount, item_quantity, timestamp FROM transactions WHERE actor_id = ANY(%(discord_ids)s) AND transaction_type = 'INVEST'"
+            if days:
+                invest_query += time_clause
+            invest_df = pd.read_sql(invest_query, conn, params={'discord_ids': discord_ids, 'days': days})
+
+            for _, sale in sell_transactions.iterrows():
+                ingamename = df.loc[df['actor_id'] == sale['actor_id'], 'ingamename'].iloc[0]
+                relevant_investments = invest_df[(invest_df['actor_id'] == sale['actor_id']) & (invest_df['item_name'] == sale['item_name']) & (invest_df['timestamp'] < sale['timestamp'])]
+                if not relevant_investments.empty:
+                    total_cost = abs(relevant_investments['cc_amount'].sum())
+                    total_shares = relevant_investments['item_quantity'].sum()
+                    avg_cost_per_share = total_cost / total_shares if total_shares > 0 else 0
+                    cost_of_goods_sold = avg_cost_per_share * sale['item_quantity']
+                    profit = sale['cc_amount'] - cost_of_goods_sold
+                    realized_earnings[ingamename] += profit
+
+        flows_df['Realized Earnings'] = pd.Series(realized_earnings)
+
+        # --- Final cleanup ---
+        all_flow_columns = ['Personal CC Gain', 'Dividend Gain', 'Gambling Net', 'Gifts Received', 'Gifts Given', 'Gift Net', 'Realized Earnings', 'Net Admin', 'Fees Paid', 'Upgrade Expense']
+        for col in all_flow_columns:
+            if col not in flows_df:
+                flows_df[col] = 0
+
+        return flows_df.reset_index()[['ingamename'] + all_flow_columns]
+
+    except (Exception, psycopg2.Error) as error:
+        logging.error(f"Error fetching financial flows for users: {error}")
+        return pd.DataFrame()
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def get_hype_data_for_all_users():
+    """
+    Gathers data for all users related to CC generation assistance for the /hype command.
+    """
+    conn = get_connection()
+    if not conn:
+        return pd.DataFrame()
+
+    query = """
+    WITH SharesHeld AS (
+        SELECT
+            p.investor_discord_id AS discord_id,
+            SUM(p.shares_owned) as shares_held
+        FROM portfolios p
+        JOIN balances b_stock ON p.stock_ingamename = b_stock.ingamename
+        WHERE p.investor_discord_id != b_stock.discord_id
+        GROUP BY p.investor_discord_id
+    ),
+    GiftsGiven AS (
+        SELECT
+            actor_id AS discord_id,
+            SUM(cc_amount) AS gifts_given
+        FROM transactions
+        WHERE transaction_type = 'GIFT_SENT'
+        GROUP BY actor_id
+    ),
+    DividendsGenerated AS (
+        SELECT
+            target_id AS discord_id,
+            SUM(cc_amount) AS dividends_generated
+        FROM transactions
+        WHERE transaction_type = 'DIVIDEND'
+        GROUP BY target_id
+    )
+    SELECT
+        b.ingamename,
+        COALESCE(sh.shares_held, 0) AS shares_held,
+        COALESCE(ABS(gg.gifts_given), 0) AS gifts_given,
+        COALESCE(dg.dividends_generated, 0) AS dividends_generated
+    FROM balances b
+    LEFT JOIN SharesHeld sh ON b.discord_id = sh.discord_id
+    LEFT JOIN GiftsGiven gg ON b.discord_id = gg.discord_id
+    LEFT JOIN DividendsGenerated dg ON b.discord_id = dg.discord_id
+    ORDER BY b.ingamename;
+    """
+    df = pd.DataFrame()
+    try:
+        df = pd.read_sql(query, conn)
+    except (Exception, psycopg2.Error) as error:
+        logging.error(f"Error fetching hype data: {error}")
+    finally:
+        if conn is not None:
+            conn.close()
+    return df
+
+
 def get_earnings_history(discord_id: str, days: int) -> pd.DataFrame:
     """
     Fetches a user's earnings history for a specified number of days.
