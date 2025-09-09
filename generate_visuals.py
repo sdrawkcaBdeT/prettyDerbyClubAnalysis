@@ -165,7 +165,7 @@ def generate_cml_image(data_df, headers, title, filename="cml_visual.png"):
     # --- 1. Setup the Figure ---
     # Dynamically adjust figure size based on content
     fig_height = max(6, num_rows * 0.4)
-    fig_width = max(10, num_cols * 2)
+    fig_width = max(10, num_cols * 2.5) # Increased width per column
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     fig.patch.set_facecolor('#2E2E2E')
     ax.set_facecolor('#2E2E2E')
@@ -194,12 +194,7 @@ def generate_cml_image(data_df, headers, title, filename="cml_visual.png"):
         for _, row in data_df.iterrows():
             y_pos -= row_height
             for i, (col_name, cell_value) in enumerate(row.items()):
-                # Simple formatting, can be expanded
-                if isinstance(cell_value, float):
-                    cell_str = f"{cell_value:,.2f}"
-                else:
-                    cell_str = str(cell_value)
-
+                cell_str = str(cell_value)
                 ax.text(header_positions[i], y_pos, cell_str, color='#E0E0E0', fontsize=12, transform=ax.transAxes, va='top', ha='left')
 
     # --- 5. Finalize and Return ---

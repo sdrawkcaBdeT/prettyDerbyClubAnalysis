@@ -1512,7 +1512,6 @@ def get_wealth_leaderboard():
 
     query = """
     WITH PortfolioValues AS (
-        -- Calculate the current total value of each user's stock holdings.
         SELECT
             p.investor_discord_id,
             COALESCE(SUM(p.shares_owned * s.current_price), 0) AS total_stock_value
@@ -1520,7 +1519,6 @@ def get_wealth_leaderboard():
         JOIN stock_prices s ON p.stock_ingamename = s.ingamename
         GROUP BY p.investor_discord_id
     )
-    -- Join balances with portfolio values to calculate total net worth.
     SELECT
         b.discord_id,
         b.ingamename,
@@ -1534,19 +1532,12 @@ def get_wealth_leaderboard():
     df = pd.DataFrame()
     try:
         df = pd.read_sql(query, conn)
-        # Format the columns for display
-        if not df.empty:
-            df['net_worth'] = df['net_worth'].map('{:,.0f} CC'.format)
-            df['cc_balance'] = df['cc_balance'].map('{:,.0f} CC'.format)
-            df['share_value'] = df['share_value'].map('{:,.0f} CC'.format)
     except (Exception, psycopg2.Error) as error:
         logging.error(f"Error fetching wealth leaderboard: {error}")
     finally:
         if conn is not None:
             conn.close()
-
     return df
-
 
 def get_financial_flows_for_users(discord_ids: list, days: int = None):
     """
@@ -1573,10 +1564,7 @@ def get_financial_flows_for_users(discord_ids: list, days: int = None):
         if df.empty:
             return pd.DataFrame()
 
-        # --- Pivot and aggregate simple flows ---
         flows_df = df.pivot_table(index='ingamename', columns='transaction_type', values='cc_amount', aggfunc='sum').fillna(0)
-
-        # --- Calculate complex/combined flows ---
         fees_paid = df.groupby('ingamename')['fee_paid'].sum().fillna(0)
         flows_df['Fees Paid'] = -fees_paid
 
@@ -1588,7 +1576,6 @@ def get_financial_flows_for_users(discord_ids: list, days: int = None):
         flows_df['Net Admin'] = flows_df.get('ADMIN_AWARD', 0) + flows_df.get('ADMIN_REMOVAL', 0)
         flows_df['Gift Net'] = flows_df.get('Gifts Received', 0) + flows_df.get('Gifts Given', 0)
 
-        # --- Realized Earnings ---
         sell_transactions = df[df['transaction_type'] == 'SELL'].copy()
         realized_earnings = {ingamename: 0 for ingamename in flows_df.index}
 
@@ -1611,7 +1598,6 @@ def get_financial_flows_for_users(discord_ids: list, days: int = None):
 
         flows_df['Realized Earnings'] = pd.Series(realized_earnings)
 
-        # --- Final cleanup ---
         all_flow_columns = ['Personal CC Gain', 'Dividend Gain', 'Gambling Net', 'Gifts Received', 'Gifts Given', 'Gift Net', 'Realized Earnings', 'Net Admin', 'Fees Paid', 'Upgrade Expense']
         for col in all_flow_columns:
             if col not in flows_df:
@@ -1625,7 +1611,6 @@ def get_financial_flows_for_users(discord_ids: list, days: int = None):
     finally:
         if conn is not None:
             conn.close()
-
 
 def get_hype_data_for_all_users():
     """
