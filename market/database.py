@@ -1803,6 +1803,84 @@ def get_house_balance() -> float:
     conn.close()
     return balance
 
+def add_funds_to_house_wallet(amount: float, admin_id: str) -> float | None:
+    """
+    Atomically adds funds to the house wallet and logs the transaction.
+    This is an administrative action.
+
+    Returns the new house balance on success, None on failure.
+    """
+    conn = get_connection()
+    if not conn:
+        return None
+
+    try:
+        with conn.cursor() as cursor:
+            # 1. Lock the wallet and update its balance.
+            cursor.execute("SELECT balance FROM house_wallet WHERE id = 1 FOR UPDATE;")
+            
+            cursor.execute(
+                "UPDATE house_wallet SET balance = balance + %s WHERE id = 1 RETURNING balance;",
+                (amount,)
+            )
+            new_balance = cursor.fetchone()[0]
+            
+            # 2. Log this administrative action in the house_ledger for a clear audit trail.
+            cursor.execute(
+                """
+                INSERT INTO house_ledger (transaction_type, net_change, player_id)
+                VALUES (%s, %s, %s);
+                """,
+                ('ADMIN_INJECTION', amount, admin_id)
+            )
+
+            conn.commit()
+            logging.info(f"Admin {admin_id} successfully added {amount} to the house wallet.")
+            return new_balance
+
+    except Exception as e:
+        logging.error(f"Failed to add funds to house wallet: {e}")
+        conn.rollback()
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+
+def get_player_betting_limit(discord_id: str) -> int:
+    """
+    Fetches a player's "High Roller License" tier and returns their
+    personal maximum bet limit.
+    """
+    conn = get_connection()
+    if not conn:
+        return 9999 # Default to base limit on DB error
+
+    bet_limits = {
+        0: 9999,      # Base limit (no upgrade)
+        1: 39999,
+        2: 99999,
+        3: 249999,
+        4: 499999,
+        5: 1000000,
+        6: 1000000    # Max tier
+    }
+
+    tier = 0
+    with conn.cursor() as cursor:
+        try:
+            cursor.execute(
+                "SELECT tier FROM shop_upgrades WHERE discord_id = %s AND upgrade_name = 'High Roller License';",
+                (discord_id,)
+            )
+            result = cursor.fetchone()
+            if result:
+                tier = result[0]
+        except Exception as e:
+            logging.error(f"Error fetching player betting tier for {discord_id}: {e}")
+    
+    conn.close()
+    return bet_limits.get(tier, 9999) # Return the limit for the tier, or default
+
 ### Racing Gambling Game Functions ###
 
 def create_race(race_id, distance, horses):
