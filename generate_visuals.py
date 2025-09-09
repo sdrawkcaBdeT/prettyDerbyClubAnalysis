@@ -155,6 +155,62 @@ def generate_portfolio_image(portfolio_df: pd.DataFrame):
     return discord.File(buf, filename="portfolio.png")
 
 
+def generate_cml_image(data_df, headers, title, filename="cml_visual.png"):
+    """
+    Generates a generic CML-style table as an image.
+    """
+    num_rows = len(data_df)
+    num_cols = len(headers)
+
+    # --- 1. Setup the Figure ---
+    # Dynamically adjust figure size based on content
+    fig_height = max(6, num_rows * 0.4)
+    fig_width = max(10, num_cols * 2)
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    fig.patch.set_facecolor('#2E2E2E')
+    ax.set_facecolor('#2E2E2E')
+
+    # --- 2. Title ---
+    if title:
+        ax.set_title(title, color='white', loc='left', pad=20, fontproperties=rankfont, fontsize=16)
+
+    # --- 3. Define Headers ---
+    # Dynamic header positions
+    header_positions = np.linspace(0.01, 0.99, num_cols)
+
+    for i, header in enumerate(headers):
+        ax.text(header_positions[i], 0.97, header, color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top', ha='left')
+
+    # --- 4. Draw Rows ---
+    y_pos = 0.95
+    if num_rows > 0:
+        row_height = 1 / (num_rows + 3) # +3 to give some padding
+    else:
+        row_height = 0
+
+    if data_df.empty:
+        ax.text(0.5, 0.45, "No data available.", color='white', fontsize=14, ha='center', va='center', transform=ax.transAxes)
+    else:
+        for _, row in data_df.iterrows():
+            y_pos -= row_height
+            for i, (col_name, cell_value) in enumerate(row.items()):
+                # Simple formatting, can be expanded
+                if isinstance(cell_value, float):
+                    cell_str = f"{cell_value:,.2f}"
+                else:
+                    cell_str = str(cell_value)
+
+                ax.text(header_positions[i], y_pos, cell_str, color='#E0E0E0', fontsize=12, transform=ax.transAxes, va='top', ha='left')
+
+    # --- 5. Finalize and Return ---
+    ax.axis('off')
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', facecolor=fig.get_facecolor(), bbox_inches='tight', pad_inches=0.3)
+    buf.seek(0)
+    plt.close(fig)
+    return discord.File(buf, filename=filename)
+
+
 def generate_visualizations(summary_df, individual_log_df, club_log_df, contribution_df, historical_df, last_updated_str, generated_str, start_date, end_date, daily_summary_df):
     """Creates and saves all the requested charts and logs."""
     print("\n--- 3. Generating Visualizations ---")

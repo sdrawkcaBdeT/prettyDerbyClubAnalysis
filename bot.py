@@ -1813,6 +1813,133 @@ async def financial_summary(ctx):
 
     await ctx.send(embed=embed)
 
+
+@bot.command(name="wealth")
+async def wealth(ctx):
+    """Displays the top 10 wealthiest players by net worth."""
+
+    # 1. Fetch data
+    leaderboard_df = database.get_wealth_leaderboard()
+
+    if leaderboard_df.empty:
+        return await ctx.send("Could not retrieve the wealth leaderboard at this time.", ephemeral=True)
+
+    # 2. Get top 10 and prepare for visual
+    top_10_df = leaderboard_df.head(10)
+
+    # Rename columns to match what the visual function expects
+    top_10_df = top_10_df.rename(columns={
+        'ingamename': 'Name',
+        'net_worth': 'Net Worth',
+        'cc_balance': 'CC Balance',
+        'share_value': 'Share Value'
+    })
+
+    headers = ['Name', 'Net Worth', 'CC Balance', 'Share Value']
+
+    # 3. Generate image
+    # The data is already formatted by the database function
+    image_file = generate_cml_image(
+        data_df=top_10_df[headers],
+        headers=headers,
+        title="Wealth Leaderboard"
+    )
+
+    # 4. Send image
+    await ctx.send(file=image_file)
+
+
+async def _send_flows_visual(ctx, days: int = None):
+    """Helper function to generate and send the flows visual."""
+    # 1. Get top 10 wealthiest players
+    wealth_df = database.get_wealth_leaderboard()
+    if wealth_df.empty:
+        return await ctx.send("Could not retrieve wealth leaderboard to determine top players.", ephemeral=True)
+
+    top_10_df = wealth_df.head(10)
+    top_10_ids = top_10_df['discord_id'].tolist()
+
+    # 2. Get financial flows for the top 10
+    flows_df = database.get_financial_flows_for_users(top_10_ids, days=days)
+
+    if flows_df.empty:
+        return await ctx.send("No financial flows found for the top players in this period.", ephemeral=True)
+
+    # Merge to keep the same order as the wealth leaderboard
+    flows_df = pd.merge(top_10_df[['ingamename']], flows_df, on='ingamename', how='left').fillna(0)
+
+    # 3. Format data for visual
+    for col in flows_df.columns:
+        if col != 'ingamename':
+            # Convert to numeric, coercing errors, then format
+            flows_df[col] = pd.to_numeric(flows_df[col], errors='coerce').fillna(0).map('{:,.0f}'.format)
+
+    # 4. Generate image
+    title = f"Financial Flows (All-Time)" if days is None else f"Financial Flows (Last {days} Days)"
+
+    # Rename for the visual
+    flows_df.rename(columns={'ingamename': 'Name'}, inplace=True)
+
+    image_file = generate_cml_image(
+        data_df=flows_df,
+        headers=flows_df.columns.tolist(),
+        title=title
+    )
+
+    await ctx.send(file=image_file)
+
+@bot.command(name="alltime_flows")
+async def alltime_flows(ctx):
+    """Displays a summary of all-time financial flows for the top 10 wealthiest players."""
+    await _send_flows_visual(ctx, None)
+
+@bot.command(name="flows")
+async def flows(ctx, days: int):
+    """Displays a summary of financial flows for the top 10 wealthiest players over a number of days."""
+    if days <= 0:
+        return await ctx.send("Please provide a positive number of days.", ephemeral=True)
+    await _send_flows_visual(ctx, days)
+
+
+@bot.command(name="hype")
+async def hype(ctx):
+    """Displays a leaderboard for CC generation assistance."""
+
+    hype_df = database.get_hype_data_for_all_users()
+
+    if hype_df.empty:
+        return await ctx.send("Could not retrieve hype data at this time.", ephemeral=True)
+
+    # Calculate Hype Multiplier
+    hype_df['hype_multiplier_granted'] = hype_df['shares_held'] * 0.0005
+
+    # Format for display
+    hype_df['shares_held'] = hype_df['shares_held'].map('{:,.2f}'.format)
+    hype_df['gifts_given'] = hype_df['gifts_given'].map('{:,.0f}'.format)
+    hype_df['dividends_generated'] = hype_df['dividends_generated'].map('{:,.0f}'.format)
+    hype_df['hype_multiplier_granted'] = hype_df['hype_multiplier_granted'].map('{:.4f}x'.format)
+
+    # Rename and order columns for the visual
+    hype_df.rename(columns={
+        'ingamename': 'Name',
+        'shares_held': 'Shares Held (in others)',
+        'hype_multiplier_granted': 'Hype Multiplier Granted',
+        'gifts_given': 'Gifts Given (CC)',
+        'dividends_generated': 'Dividends Generated (CC)'
+    }, inplace=True)
+
+    headers = ['Name', 'Shares Held (in others)', 'Hype Multiplier Granted', 'Gifts Given (CC)', 'Dividends Generated (CC)']
+
+    # Generate image
+    image_file = generate_cml_image(
+        data_df=hype_df[headers],
+        headers=headers,
+        title="Hype & Generosity Leaderboard"
+    )
+
+    await ctx.send(file=image_file)
+
+
 # bot.py
 
 # (Replace the existing /earnings command with this new version)
