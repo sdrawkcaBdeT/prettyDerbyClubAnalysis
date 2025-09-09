@@ -22,7 +22,7 @@ class Horse:
         self.stats = {} # Will hold the final calculated stats
 
         # Load the configuration file that defines all attributes
-        with open('market/configs/horse_attributes.json', 'r') as f:
+        with open('horse_racing_game/configs/horse_attributes.json', 'r') as f:
             self.attributes_config = json.load(f)
             
         self._calculate_stats()
