@@ -332,6 +332,9 @@ def generate_performance_heatmap(historical_df, summary_df, filename, generated_
     labels = ['Ranks 1-6', 'Ranks 7-12', 'Ranks 13-18', 'Ranks 19-24', 'Ranks 25-30']
     historical_df['Rank Group'] = pd.cut(historical_df['rank'], bins=bins, labels=labels, right=True)
 
+    # --- Filter data to the current month window ---
+    historical_df = historical_df[(historical_df['timestamp'] >= start_date) & (historical_df['timestamp'] <= end_date)].copy()
+
     # Create Club and Rank data pivot table
     club_total = historical_df.groupby('time_group')['fanGain'].sum()
     rank_groups = historical_df.groupby(['time_group', 'Rank Group'], observed=True)['fanGain'].sum().unstack()
@@ -339,18 +342,29 @@ def generate_performance_heatmap(historical_df, summary_df, filename, generated_
 
 
     # --- Pacing Calculations ---
+    # "This Window Proj." calculation
     cumulative_gain_before = club_total.cumsum().shift(1).fillna(0)
     time_since_start_before = (club_total.index - start_date).total_seconds() / 3600
     cumulative_rate_before = (cumulative_gain_before / time_since_start_before).where(time_since_start_before > 0, 0)
-
-    cumulative_gain_through = club_total.cumsum()
-    time_since_start_through = (club_total.index + pd.Timedelta(hours=8) - start_date).total_seconds() / 3600
-    cumulative_rate_through = (cumulative_gain_through / time_since_start_through).where(time_since_start_through > 0, 0)
-
-    total_month_hours = (end_date - start_date).total_seconds() / 3600
-
     projected_window_gain = (cumulative_rate_before * 8).rename("This Window Proj.")
-    projected_eom_gain = (cumulative_rate_through * total_month_hours).rename("End-of-Month Proj.")
+
+    # "End-of-Month Proj." calculation (new, corrected logic)
+    if not club_total.empty:
+        cumulative_gain_through = club_total.cumsum()
+
+        last_update_ts = historical_df['timestamp'].max()
+        end_of_window_timestamps = club_total.index + pd.Timedelta(hours=8)
+        actual_end_timestamps = end_of_window_timestamps.where(end_of_window_timestamps < last_update_ts, last_update_ts)
+
+        time_elapsed_hrs = (actual_end_timestamps - start_date).total_seconds() / 3600
+        time_remaining_hrs = (end_date - actual_end_timestamps).total_seconds() / 3600
+
+        fans_per_hour = (cumulative_gain_through / time_elapsed_hrs).where(time_elapsed_hrs > 0, 0).fillna(0)
+        projected_eom_gain = (cumulative_gain_through + (fans_per_hour * time_remaining_hrs)).rename("End-of-Month Proj.")
+    else:
+        # Handle case with no data in the period
+        projected_eom_gain = pd.DataFrame(columns=data_to_plot.columns, index=["End-of-Month Proj."]).fillna(0)
+
 
     data_to_plot = pd.concat([data_to_plot, pd.DataFrame(projected_window_gain).T, pd.DataFrame(projected_eom_gain).T])
 
