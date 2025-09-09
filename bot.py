@@ -189,6 +189,29 @@ async def send_to_fan_exchange(guild, message_content, file=None):
     else:
         print(f"ERROR: Could not find the #{FAN_EXCHANGE_CHANNEL_NAME} channel.")
 
+async def send_to_channel_by_name(channel_name, message_content, file_path=None):
+    """Finds a channel by name and sends a message and optional file there."""
+    if not bot.guilds:
+        print("Bot is not in any guild.")
+        return
+
+    guild = bot.guilds[0]
+    channel = discord.utils.get(guild.channels, name=channel_name)
+
+    if not channel:
+        print(f"Error: I couldn't find the `#{channel_name}` channel.")
+        return
+
+    if file_path and not os.path.exists(file_path):
+        print(f"Error: I couldn't find the file at {file_path}.")
+        return
+
+    try:
+        file_to_send = discord.File(file_path) if file_path else None
+        await channel.send(message_content, file=file_to_send)
+    except Exception as e:
+        print(f"Error sending to channel {channel_name}: {e}")
+
 def log_command_usage(ctx):
     """Logs the details of a command execution to a CSV file."""
     file_exists = os.path.isfile(COMMAND_LOG_CSV)
@@ -583,6 +606,46 @@ def get_24hr_change(stock_name: str, history_df: pd.DataFrame, current_price: fl
     percent_change = (price_change / past_price) * 100 if past_price != 0 else 0
     return price_change, percent_change
 
+# --- Fan Update Task ---
+last_update_announced_timestamp = None
+
+@tasks.loop(minutes=1)
+async def post_fan_update():
+    """Checks for new fan data and posts an update to the scoreboard."""
+    global last_update_announced_timestamp
+    await bot.wait_until_ready()
+
+    try:
+        if not os.path.exists(ENRICHED_FAN_LOG_CSV):
+            return
+
+        df = pd.read_csv(ENRICHED_FAN_LOG_CSV)
+        if df.empty:
+            return
+
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        latest_timestamp = df['timestamp'].max()
+
+        if last_update_announced_timestamp is None:
+            # On first run, just set the timestamp and do nothing.
+            last_update_announced_timestamp = latest_timestamp
+            return
+
+        if latest_timestamp > last_update_announced_timestamp:
+            update_df = df[df['timestamp'] == latest_timestamp]
+            total_fan_gain = update_df['fanGain'].sum()
+
+            if total_fan_gain > 0:
+                message = (f"📢 **Club Update!**\n"
+                           f"The data has been updated! The club gained a total of **{total_fan_gain:,.0f}** fans!")
+                await send_to_channel_by_name(SCOREBOARD_CHANNEL_NAME, message)
+
+            last_update_announced_timestamp = latest_timestamp
+
+    except Exception as e:
+        print(f"Error in post_fan_update task: {e}")
+
+
 # --- Events ---
 @bot.event
 async def on_ready():
@@ -596,6 +659,9 @@ async def on_ready():
     if not check_for_announcements.is_running():
         print("Starting announcement checking task...")
         check_for_announcements.start()
+    if not post_fan_update.is_running():
+        print("Starting fan update checking task...")
+        post_fan_update.start()
 
 @bot.event
 async def on_command_completion(ctx):
