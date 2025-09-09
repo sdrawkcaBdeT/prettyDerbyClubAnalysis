@@ -1104,12 +1104,17 @@ async def whos_hot(ctx, days: int = 3):
 
 @bot.command(name="gift_cc")
 async def gift_cc(ctx, member: str, amount: int):
-    """Gifts a specified amount of CC to another member, with a 5% fee."""
+    """Gifts a specified amount of CC to another member."""
     sender_id = str(ctx.author.id)
 
     # 1. Input Validation
     if amount <= 0:
         return await ctx.send("You must gift a positive amount of CC.", ephemeral=True)
+
+    sender_details = database.get_user_details(sender_id)
+    if not sender_details:
+         return await ctx.send("Could not find your user account. Are you registered?", ephemeral=True)
+    sender_name = sender_details['ingamename']
 
     receiver_details = database.get_user_details_by_identifier(member)
     if not receiver_details:
@@ -1121,19 +1126,15 @@ async def gift_cc(ctx, member: str, amount: int):
     if sender_id == receiver_id:
         return await ctx.send("You cannot gift CC to yourself.", ephemeral=True)
 
-    # 2. Calculate Fee and Total
-    fee = amount * 0.05
-    total_cost = amount + fee
-
-    # 3. Preliminary Balance Check (final check is in the DB function)
-    sender_balance = database.get_user_balance_by_discord_id(sender_id)
-    if sender_balance is None or sender_balance < total_cost:
+    # 2. Preliminary Balance Check
+    sender_balance = sender_details['balance']
+    if sender_balance is None or sender_balance < amount:
         return await ctx.send(
-            f"Insufficient funds. You need **{format_cc(total_cost)}** (including a {format_cc(fee)} fee) to send this gift, but your balance is only {format_cc(sender_balance)}.",
+            f"Insufficient funds. You need **{format_cc(amount)}** to send this gift, but your balance is only {format_cc(sender_balance)}.",
             ephemeral=True
         )
 
-    # 4. Confirmation View
+    # 3. Confirmation View
     class GiftConfirmationView(discord.ui.View):
         def __init__(self, *, timeout=30):
             super().__init__(timeout=timeout)
@@ -1166,22 +1167,21 @@ async def gift_cc(ctx, member: str, amount: int):
         description=f"You are about to send **{format_cc(amount)}** to **{receiver_name}**.",
         color=discord.Color.blue()
     )
-    embed.add_field(name="Transaction Fee (5%)", value=format_cc(fee), inline=False)
-    embed.add_field(name="Total Cost to You", value=format_cc(total_cost), inline=False)
+    embed.add_field(name="Total Cost to You", value=format_cc(amount), inline=False)
     embed.set_footer(text="Please confirm you want to proceed.")
 
     view = GiftConfirmationView()
     await ctx.send(embed=embed, view=view, ephemeral=True)
     await view.wait()
 
-    # 5. Execute Transaction
+    # 4. Execute Transaction
     if view.confirmed:
         new_balance = database.execute_gift_transaction(
             sender_id=sender_id,
+            sender_name=sender_name,
             receiver_id=receiver_id,
             receiver_name=receiver_name,
-            amount=amount,
-            fee=fee
+            amount=amount
         )
 
         if new_balance is not None:

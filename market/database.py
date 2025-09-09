@@ -1000,51 +1000,59 @@ def execute_trade_transaction(
             return None
     conn.close()
 
-def execute_gift_transaction(sender_id: str, receiver_id: str, receiver_name: str, amount: float, fee: float) -> float | None:
+def execute_gift_transaction(sender_id: str, sender_name: str, receiver_id: str, receiver_name: str, amount: float) -> float | None:
     """
-    Atomically transfers CC from a sender to a receiver, applies a fee, and logs the transaction.
+    Atomically transfers CC from a sender to a receiver and logs the transaction for both parties.
     Returns the sender's new balance on success, None on failure.
     """
     conn = get_connection()
     if not conn:
         return None
 
-    total_debit = amount + fee
-
     with conn.cursor() as cursor:
         try:
-            # 1. Lock the sender's wallet and verify funds
+            # 1. Lock both wallets to prevent race conditions and verify funds
             cursor.execute("SELECT balance FROM balances WHERE discord_id = %s FOR UPDATE;", (sender_id,))
             sender_wallet = cursor.fetchone()
-            if not sender_wallet or sender_wallet[0] < total_debit:
+            if not sender_wallet or sender_wallet[0] < amount:
                 conn.rollback()
                 return None  # Insufficient funds
+
+            # Lock the receiver's wallet as well
+            cursor.execute("SELECT balance FROM balances WHERE discord_id = %s FOR UPDATE;", (receiver_id,))
 
             # 2. Debit the sender
             cursor.execute(
                 "UPDATE balances SET balance = balance - %s WHERE discord_id = %s RETURNING balance;",
-                (total_debit, sender_id)
+                (amount, sender_id)
             )
             new_sender_balance = cursor.fetchone()[0]
 
             # 3. Credit the receiver
             cursor.execute(
-                "UPDATE balances SET balance = balance + %s WHERE discord_id = %s;",
+                "UPDATE balances SET balance = balance + %s WHERE discord_id = %s RETURNING balance;",
                 (amount, receiver_id)
             )
+            new_receiver_balance = cursor.fetchone()[0]
 
-            # 4. Add the fee to the house wallet
-            if fee > 0:
-                cursor.execute("UPDATE house_wallet SET balance = balance + %s WHERE id = 1;", (fee,))
-
-            # 5. Log the transaction for the sender
-            sender_log_details = json.dumps({"receiver": receiver_name, "fee_paid": round(fee, 2)})
+            # 4. Log the transaction for the SENDER
+            sender_log_details = json.dumps({"receiver": receiver_name})
             cursor.execute(
                 """
                 INSERT INTO transactions (actor_id, transaction_type, item_name, cc_amount, details, balance_after)
                 VALUES (%s, 'GIFT_SENT', %s, %s, %s, %s);
                 """,
                 (sender_id, f"Gift to {receiver_name}", -amount, sender_log_details, new_sender_balance)
+            )
+
+            # 5. Log the transaction for the RECEIVER
+            receiver_log_details = json.dumps({"sender": sender_name})
+            cursor.execute(
+                """
+                INSERT INTO transactions (actor_id, transaction_type, item_name, cc_amount, details, balance_after)
+                VALUES (%s, 'GIFT_RECEIVED', %s, %s, %s, %s);
+                """,
+                (receiver_id, f"Gift from {sender_name}", amount, receiver_log_details, new_receiver_balance)
             )
 
             conn.commit()
