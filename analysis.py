@@ -13,7 +13,7 @@ import ast # Required for parsing the lag options
 from market.economy import process_cc_earnings
 from market.engine import update_all_stock_prices, calculate_individual_nudges
 from market.events import clear_and_check_events, update_lag_index
-from market.database import get_market_data_from_db, save_all_market_data_to_db, save_market_state_to_db
+from market.database import get_market_data_from_db, save_all_market_data_to_db, save_market_state_to_db, get_unapplied_prestige_purchases, flag_prestige_purchases_as_applied, get_inGameName_by_discord_id, get_discord_id_to_ingamename_map
 
 # --- Configuration ---
 MEMBERS_CSV = 'members.csv'
@@ -133,9 +133,39 @@ def main():
     
     fanlog_df['timeDiffMinutes'] = fanlog_df.groupby('inGameName')['timestamp'].diff().dt.total_seconds() / 60
     fanlog_df['timeDiffMinutes'].fillna(0, inplace=True)
+    
+    # 1. Initialize the new column
+    fanlog_df['prestigePurchased'] = 0.0
+    
+    # 2. Fetch and apply unapplied prestige purchases
+    unapplied_purchases = get_unapplied_prestige_purchases()
+    applied_purchase_ids = []
+
+    if not unapplied_purchases.empty:
+        print(f"Found {len(unapplied_purchases)} unapplied prestige purchases to process.")
+        
+        # Get the mapping directly from the database, the single source of truth
+        id_to_name_map = get_discord_id_to_ingamename_map()
+
+        for _, purchase in unapplied_purchases.iterrows():
+            discord_id = str(purchase['discord_id']) # Ensure it's a string for matching
+            amount = purchase['prestige_amount']
+            inGameName = id_to_name_map.get(discord_id)
+
+            if inGameName:
+                # Find the last known entry for this user to append the purchase to
+                if inGameName in fanlog_df['inGameName'].values:
+                    last_entry_index = fanlog_df[fanlog_df['inGameName'] == inGameName].index[-1]
+                    fanlog_df.loc[last_entry_index, 'prestigePurchased'] += float(amount)
+                    applied_purchase_ids.append(purchase['purchase_id'])
+                else:
+                    print(f"Warning: Could not apply prestige for {inGameName} (ID: {discord_id}). No entries in fan log.")
+            else:
+                 print(f"Warning: Could not find inGameName for discord_id {discord_id} in database lookup.")
+    
     fanlog_df['performancePrestigePoints'] = fanlog_df['fanGain'] / 8333
     fanlog_df['tenurePrestigePoints'] = 20 * (fanlog_df['timeDiffMinutes'] / 1440)
-    fanlog_df['prestigeGain'] = fanlog_df['performancePrestigePoints'] + fanlog_df['tenurePrestigePoints']
+    fanlog_df['prestigeGain'] = fanlog_df['performancePrestigePoints'] + fanlog_df['tenurePrestigePoints'] + fanlog_df['prestigePurchased']
 
     fanlog_df['lifetimePrestige'] = fanlog_df.groupby('inGameName')['prestigeGain'].cumsum()
 
@@ -210,6 +240,9 @@ def main():
     
     final_next_market_state_df.loc[final_next_market_state_df['state_name'] == 'last_run_timestamp', 'state_value'] = run_timestamp.isoformat()
     save_market_state_to_db(final_next_market_state_df)
+    
+    if applied_purchase_ids:
+        flag_prestige_purchases_as_applied(applied_purchase_ids)
     
     # --- 5. QUEUE ANNOUNCEMENTS ---
     if lag_announcement:
