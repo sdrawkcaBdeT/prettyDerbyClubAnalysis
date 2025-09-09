@@ -81,18 +81,37 @@ SHOP_ITEMS = {
         },
         "t2": {
             "name": "Garner Owner's Favor",
-            "description": "Adds a flat +150 CC per day. (Note: This is a passive effect handled by the backend)",
+            "description": "Adds a flat +150 CC per day. (Note: This is a passive effect handled by the backend [NOT IMPLEMENTED YET]).",
             "costs": [75000, 225000, 675000],
             "max_tier": 3,
             "type": "upgrade"
+        }
+    },
+    "GAMBLING": {
+    "g1": {
+        "name": "High Roller License",
+        "description": "Permanently increases your personal maximum bet limit for all gambling games.",
+        # Tiers:  1        2        3         4         5         6
+        "costs": [75000, 200000, 500000, 1250000, 2500000, 5000000],
+        "max_tier": 6,
+        "type": "upgrade"
         }
     }
 }
 
 CARD_SUITS = {"Spades": "♠️", "Hearts": "♥️", "Clubs": "♣️", "Diamonds": "♦️"}
 CARD_RANKS = {"2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10, "J": 11, "Q": 12, "K": 13, "A": 14}
-# The payout multiplier for a winning bet in higher or lower (1.9x creates a house edge)
-PAYOUT_MULTIPLIER = 1.9
+# The payout multiplier for a winning bet in higher or lower 1.75x creates a house edge)
+PAYOUT_MULTIPLIER = 1.45
+BET_LIMITS = {
+    0: 2000000,      # Base limit (no upgrade)
+    1: 39999,
+    2: 99999,
+    3: 249999,
+    4: 499999,
+    5: 1000000,
+    6: 1000000    # Max tier
+}
 
 # --- NEW: Event Flavor Text ---
 EVENT_FLAVOR_TEXT = {
@@ -686,6 +705,7 @@ async def help(ctx):
     embed.add_field(name="CLUB CHARTS & REPORTS", value=("`/top10` - Shows the current top 10 members by monthly fan gain.\n" "`/alltime_top10` - Shows the current top 10 members by all-time fan gain.\n" "`/prestige_leaderboard` - Displays the all-time prestige point leaderboard.\n" "`/performance` - Posts the historical fan gain heatmap.\n" "`/log [member_name]` - Gets the detailed performance log for any member."), inline=False)
     embed.add_field(name="FAN EXCHANGE (Stock Market)", value=("`/exchange_help` - Provides a concise explanation and startup guide for the Fan Exchange system.\n" "`/market` - Displays the all stocks and some info.\n" "`/portfolio` - View your current stock holdings and their performance.\n" "`/stock [name/ticker]` - Shows the price history and stats for a specific racer.\n" "`/invest [name/ticker] [amount]` - Buy shares in a racer's stock, specifying SHARES to invest.\n" "`/sell [name/ticker] [amount]` - Sell shares of a racer's stock, specifying shares to sell.\n" "`/shop` - See what you can buy with your CC! Earnings upgrades and prestige!" "`/buy [shop_id]` - Purchase something from the shop!" "`/set_ticker [2-5 letter ticker]` - Set your unique stock ticker symbol."), inline=False)
     embed.add_field(name="FINANCIAL REPORTING", value=("`/financial_summary` - Get a high-level overview of your net worth, P/L, and ROI.\n" "`/earnings [7 or 30]` - View a detailed list of your income from earnings and dividends.\n" "`/ledger` - See a complete, paginated history of all your transactions."), inline=False)
+    embed.add_field(name="GAMBA", value=("`/higherlower [betamount]` - - Play a game of Higher or Lower! Bet your CC and guess if the next card will be higher or lower than the one shown. Aces are high and ties are a loss."), inline=False)
     embed.set_footer(text="Remember to use the command prefix '/' before each command.")
     await ctx.send(embed=embed, ephemeral=True)
 
@@ -992,7 +1012,6 @@ async def shop(ctx):
     """Displays the Prestige Shop with available items and your upgrade tiers."""
     user_id = str(ctx.author.id)
 
-    # --- REFACTORED: Get all shop data in one go ---
     shop_data = database.get_shop_data(user_id)
     if not shop_data:
         return await ctx.send("Could not retrieve your account data. Are you registered?", ephemeral=True)
@@ -1004,25 +1023,41 @@ async def shop(ctx):
     embed = discord.Embed(title="Prestige Shop", description="Spend your Crew Coins to get ahead!", color=discord.Color.purple())
     embed.set_footer(text=f"Your current balance: {format_cc(balance)}")
 
+    # --- Prestige Purchases (No changes here) ---
     prestige_text = ""
     for item_id, item_details in SHOP_ITEMS['PRESTIGE'].items():
-        # Using your original helper function for dynamic cost
         bundle_cost = calculate_prestige_bundle_cost(current_prestige, item_details['amount'])
         prestige_text += f"**{item_details['name']} (ID: `{item_id}`)**\nCost: **{format_cc(bundle_cost)}**\n\n"
     embed.add_field(name="--- Prestige Purchases ---", value=prestige_text, inline=False)
 
+    # --- Upgrades Loop (Contains the fix) ---
     for category, items in SHOP_ITEMS.items():
-        if category == "PRESTIGE": continue
+        if category in ["PRESTIGE"]: continue # Skip prestige, already handled
+        
         category_text = ""
         for item_id, item_details in items.items():
             current_tier = user_upgrades.get(item_details['name'], 0)
+            description = item_details['description'] # Start with the base description
+
+            # --- START OF NEW LOGIC FOR DYNAMIC DESCRIPTION ---
+            if item_details['name'] == "High Roller License":
+                current_limit = BET_LIMITS.get(current_tier, 9999)
+                if current_tier < item_details['max_tier']:
+                    next_limit = BET_LIMITS.get(current_tier + 1, 1000000)
+                    # Append the dynamic info
+                    description += f"\n*Current Limit: {format_cc(current_limit)} → Next Tier: {format_cc(next_limit)}*"
+                else:
+                    description += f"\n*Current Limit: {format_cc(current_limit)} (Max Tier)*"
+            # --- END OF NEW LOGIC ---
+
             if current_tier >= item_details['max_tier']:
                 status = "**(Max Tier)**"
             else:
                 cost = item_details['costs'][current_tier]
                 status = f"Tier {current_tier+1} Cost: **{format_cc(cost)}**"
             
-            category_text += f"**{item_details['name']} (ID: `{item_id}`)**\n{item_details['description']}\n*Your Tier: {current_tier}* | {status}\n\n"
+            category_text += f"**{item_details['name']} (ID: `{item_id}`)**\n{description}\n*Your Tier: {current_tier}* | {status}\n\n"
+        
         embed.add_field(name=f"--- {category} Upgrades ---", value=category_text, inline=False)
         
     await ctx.send(embed=embed)
@@ -2259,6 +2294,47 @@ class HigherLowerView(discord.ui.View):
             return False
         return True
 
+    async def on_timeout(self):
+        """
+        Called when the view's 60-second timer expires.
+        This now treats the timeout as a forfeit and resolves the game as a loss.
+        """
+        # Disable all the buttons to show the game is over
+        for item in self.children:
+            item.disabled = True
+
+        # --- START OF NEW LOGIC ---
+
+        # The outcome is a loss, so winnings are 0.
+        winnings = 0
+        net_change = winnings - self.bet_amount # This will be a negative number
+
+        details = {
+            "bet": self.bet_amount,
+            "starting_card": f"{self.first_card[0]} {CARD_SUITS[self.first_card[1]]}",
+            "choice": "TIMEOUT (FORFEIT)",
+            "next_card": "N/A",
+            "outcome": "FORFEIT",
+            "net_cc": net_change,
+        }
+
+        # Execute the database transaction to deduct the bet
+        new_balance = database.execute_gambling_transaction(
+            str(self.author.id), "Higher or Lower", self.bet_amount, winnings, details
+        )
+        
+        # Create a new, clear message indicating the timeout
+        timeout_embed = discord.Embed(
+            title="Game Timed Out: Forfeit!",
+            description=f"{self.author.display_name} did not make a choice in time. The bet of **{format_cc(self.bet_amount)}** has been forfeited.",
+            color=discord.Color.dark_grey()
+        )
+        if new_balance is not None:
+            timeout_embed.set_footer(text=f"Your new balance is {format_cc(new_balance)}")
+        
+        # Edit the original game message to show the timeout status
+        await self.message.edit(embed=timeout_embed, view=self)
+    
     async def resolve_game(self, interaction: discord.Interaction):
         self.stop()
         for item in self.children:
@@ -2319,14 +2395,23 @@ async def higherlower(ctx, bet: int):
     if bet <= 100:
         return await ctx.send("The minimum bet is 101 CC.", ephemeral=True)
 
-    # 1. Get the house balance and determine the max bet
+    # --- START OF NEW BET LIMIT LOGIC ---
+
+    # 1. Get the two potential maximums
     house_balance = database.get_house_balance()
-    # Max bet is 35% of the house's current bankroll, with a minimum of 1000 CC.
-    max_bet = max(1000, int(house_balance * 0.35))
+    house_max_bet = max(1000, int(house_balance * 0.35))
+    player_personal_limit = database.get_player_betting_limit(user_id)
+
+    # 2. The true max bet is the LOWER of the two limits
+    max_bet = min(house_max_bet, player_personal_limit)
 
     if bet > max_bet:
-        await ctx.send(f"Your bet is too high! The current maximum bet is **{format_cc(max_bet)}**.", ephemeral=True)
-        higherlower.reset_cooldown(ctx) # Reset cooldown on a failed check
+        await ctx.send(
+            f"Your bet of **{format_cc(bet)}** exceeds your current maximum bet limit of **{format_cc(max_bet)}**.\n"
+            f"Purchase a 'High Roller License' in the `/shop` to increase your personal limit.",
+            ephemeral=True
+        )
+        higherlower.reset_cooldown(ctx)
         return
 
     # 2. Perform a PRELIMINARY balance check for good user experience.
@@ -2349,11 +2434,41 @@ async def higherlower(ctx, bet: int):
     )
     card_str = f"{first_card[0]} {CARD_SUITS[first_card[1]]}"
     embed.add_field(name="Your Card", value=f"**{card_str}**")
-    embed.set_footer(text="Aces are high. A tie is a loss.")
+    embed.set_footer(text="Aces are high. A tie is a loss. A decision must be made within 60 seconds or the bet is forfeit.")
 
     view = HigherLowerView(author=ctx.author, bet_amount=bet, first_card=first_card)
     
     await ctx.send(embed=embed, view=view)
+
+@bot.command(name="add_house_funds")
+@commands.check(is_admin)
+async def add_house_funds(ctx, amount: int):
+    """(Admin Only) Adds a specified amount of CC to the house wallet."""
+    admin_id = str(ctx.author.id)
+
+    if amount <= 0:
+        return await ctx.send("Please enter a positive amount to add.", ephemeral=True)
+
+    # Call the new, safe database function
+    new_balance = database.add_funds_to_house_wallet(float(amount), admin_id)
+
+    if new_balance is not None:
+        embed = discord.Embed(
+            title="✅ House Wallet Funded",
+            description=f"You have successfully added **{format_cc(amount)}** to the house wallet.",
+            color=discord.Color.green()
+        )
+        embed.set_footer(text=f"The new house balance is {format_cc(new_balance)}")
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("❌ An error occurred while trying to add funds to the house wallet. Check the logs.", ephemeral=True)
+
+@add_house_funds.error
+async def add_house_funds_error(ctx, error):
+    if isinstance(error, commands.CheckFailure):
+        await ctx.send("You do not have permission to use this command.", ephemeral=True)
+    else:
+        await ctx.send(f"An error occurred: {error}", ephemeral=True)
 
 # ---------------------------------------------
 
