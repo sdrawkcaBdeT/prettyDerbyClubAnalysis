@@ -639,52 +639,63 @@ def get_trending_stocks(days: int = 3):
     Returns a pandas DataFrame sorted by percentage change (descending).
     """
     conn = get_connection()
-    if not conn: return pd.DataFrame()
+    if not conn:
+        return pd.DataFrame()
 
-    # This query uses Common Table Expressions (CTEs) for clarity and performance.
-    # It first finds the most recent price for each stock from before the specified `days` interval.
-    # Then, it joins this historical price with the current price to prepare for the calculation.
     query = """
     WITH PriceHistoryPast AS (
-        -- For each stock, find the most recent price from more than X days ago.
-        -- The window function FIRST_VALUE is used to efficiently get the latest price within the partition.
         SELECT
             ingamename,
             FIRST_VALUE(price) OVER (PARTITION BY ingamename ORDER BY timestamp DESC) as price_past
         FROM stock_price_history
-        WHERE timestamp < NOW() - INTERVAL %(days)s
+        WHERE timestamp < NOW() - (%s * INTERVAL '1 day')
     ),
     LatestPriceHistory AS (
-        -- This ensures we only have one historical price per stock, avoiding duplicate rows.
         SELECT DISTINCT ingamename, price_past FROM PriceHistoryPast
     )
-    -- The final query joins the current prices of active stocks with their historical prices.
     SELECT
         s.ingamename,
         s.ticker,
         s.current_price,
-        -- If a stock has no history before the interval (e.g., it's new),
-        -- we use its current price as the past price to show a 0% change.
         COALESCE(lph.price_past, s.current_price) AS price_past
     FROM stock_prices s
     LEFT JOIN LatestPriceHistory lph ON s.ingamename = lph.ingamename
     WHERE s.status = 'active';
     """
+    
+    try:
+        # CORRECTED LINE: Pass `days` using the `params` argument
+        # The (days,) syntax creates a single-element tuple.
+        df = pd.read_sql(query, conn, params=(days,))
 
+        # Perform the percentage change calculation in pandas
+        df['percent_change'] = ((df['current_price'] - df['price_past']) / df['price_past']) * 100
+        df = df.sort_values(by='percent_change', ascending=False)
+        return df
+
+    except Exception as e:
+        print(f"Error fetching trending stocks: {e}")
+        return pd.DataFrame()
+
+    finally:
+        if conn:
+            conn.close()
+    
     df = pd.DataFrame()
     try:
         # The query is executed with parameters to prevent SQL injection.
-        df = pd.read_sql(query, conn, params={'days': f'{days} days'})
-
+        # FIX: Pass the integer directly and multiply the interval in the query.
+        df = pd.read_sql(query, conn, params=(days,))
+        
         if not df.empty:
             # The percentage change calculation is done in pandas for safety and flexibility.
             # This avoids potential division-by-zero errors in SQL.
             df['price_change'] = df['current_price'] - df['price_past']
-
+            
             # We replace a zero past price with NaN before division to prevent errors.
             past_prices = df['price_past'].replace(0, pd.NA)
             df['percent_change'] = (df['price_change'] / past_prices) * 100
-
+            
             # Sort by the calculated percentage change and fill any NaN/inf values with 0.
             df.sort_values('percent_change', ascending=False, inplace=True)
             df.replace([pd.NA, float('inf'), float('-inf')], 0, inplace=True)
@@ -695,7 +706,7 @@ def get_trending_stocks(days: int = 3):
     finally:
         if conn is not None:
             conn.close()
-
+            
     return df
 
 

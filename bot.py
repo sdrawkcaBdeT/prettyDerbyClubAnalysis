@@ -1045,7 +1045,7 @@ async def log(ctx, *, name: str):
 async def livegains(ctx):
     """Posts the 24-hour fan gain log."""
     timestamp_str = get_last_update_timestamp()
-    message = f"{ctx.author.mention} here is the live fan gain log for the last 24 hours!"
+    message = f"{ctx.author.mention} here is the live fan gain log for the last 6 hours!"
     file_path = os.path.join(OUTPUT_DIR, 'update_log_24hr.png')
     await send_to_scoreboard(ctx, message, file_path)
 
@@ -1155,13 +1155,13 @@ async def whos_hot(ctx, days: int = 3):
         for index, row in top_5.iterrows():
             ticker = f"(${row['ticker']})" if pd.notna(row['ticker']) else ""
             name = f"**{row['ingamename']}** {ticker}"
-
+            
             change_str = f"{'+' if row['percent_change'] >= 0 else ''}{row['percent_change']:.2f}%"
             value = (f"**Change**: {change_str}\n"
                      f"**Current Price**: {format_cc(row['current_price'])}")
-
+            
             embed.add_field(name=name, value=value, inline=False)
-
+            
     await ctx.send(embed=embed)
 
 @bot.command(name="gift_cc")
