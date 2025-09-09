@@ -26,7 +26,7 @@ class BotManager:
     def _load_bot_profiles(self) -> list:
         """Loads the bot personality profiles from the JSON config."""
         try:
-            with open('market/configs/bot_personalities.json', 'r') as f:
+            with open('horse_racing_game/configs/bot_personalities.json', 'r') as f:
                 return json.load(f)
         except FileNotFoundError:
             print("ERROR: bot_personalities.json not found.")
