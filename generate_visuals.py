@@ -454,6 +454,69 @@ def generate_contribution_chart(contribution_df, last_updated_str, generated_str
     print("  - Saved fan_contribution_by_rank.png")
 
 
+def generate_24hr_update_log(individual_log_df, generated_str, last_updated_str):
+    """Generates a log of all fan gains across the club in the last 24 hours."""
+    print("  - Generating 24-hour fan gain log...")
+
+    # --- 1. Data Filtering ---
+    if not pd.api.types.is_datetime64_any_dtype(individual_log_df['timestamp']):
+        individual_log_df['timestamp'] = pd.to_datetime(individual_log_df['timestamp'])
+
+    last_update_time = individual_log_df['timestamp'].max()
+    twenty_four_hours_ago = last_update_time - pd.Timedelta(hours=24)
+
+    recent_gains_df = individual_log_df[
+        (individual_log_df['timestamp'] >= twenty_four_hours_ago) &
+        (individual_log_df['fanGain'] != 0)
+    ].copy()
+
+    if recent_gains_df.empty:
+        print("  - No fan gains in the last 24 hours. Skipping visual.")
+        return
+
+    recent_gains_df.sort_values('timestamp', ascending=False, inplace=True)
+
+    # --- 2. Image Generation ---
+    num_rows = len(recent_gains_df)
+    fig_height = max(6, num_rows * 0.35)
+    fig, ax = plt.subplots(figsize=(10, fig_height))
+    fig.patch.set_facecolor('#2E2E2E')
+    ax.set_facecolor('#2E2E2E')
+    ax.set_title(f"Live Fan Gains (Last 24 Hours) | Updated: {last_updated_str}", color='white', loc='left', pad=20, fontproperties=rankfont, fontsize=16)
+
+    # --- 3. Table Headers ---
+    headers = ['Timestamp (CT)', 'Member', 'Fan Gain']
+    header_positions = [0.01, 0.45, 0.85]
+
+    for i, header in enumerate(headers):
+        ax.text(header_positions[i], 0.97, header, color='#A0A0A0', fontsize=10, weight='bold', transform=ax.transAxes, va='top', ha='left')
+
+    # --- 4. Table Rows ---
+    y_pos = 0.95
+    row_height = 1 / (num_rows + 3)
+
+    for _, row in recent_gains_df.iterrows():
+        hour = row['timestamp'].strftime('%I').lstrip('0') or '12'
+        timestamp_str = f"{hour}:{row['timestamp'].strftime('%M %p %m/%d')}"
+        member_name = row['inGameName']
+        gain_val = row['fanGain']
+        gain_str = f"+{int(gain_val):,}" if gain_val > 0 else f"{int(gain_val):,}"
+        gain_color = '#4CAF50' if gain_val > 0 else '#F44336'
+
+        ax.text(header_positions[0], y_pos, timestamp_str, color='#E0E0E0', fontsize=12, transform=ax.transAxes, va='top', ha='left')
+        ax.text(header_positions[1], y_pos, member_name, color='#E0E0E0', fontsize=12, transform=ax.transAxes, va='top', ha='left')
+        ax.text(header_positions[2], y_pos, gain_str, color=gain_color, fontsize=12, weight='bold', transform=ax.transAxes, va='top', ha='left')
+
+        y_pos -= row_height
+
+    # --- 5. Final Touches ---
+    add_timestamps_to_fig(fig, generated_str)
+    ax.axis('off')
+    plt.savefig(os.path.join(OUTPUT_DIR, "update_log_24hr.png"), bbox_inches='tight', pad_inches=0.3, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    print("  - Saved update_log_24hr.png")
+
+
 def generate_log_image(member_data_df, title, filename, generated_str, limit = 31, is_club_log=False):
     """Generates and saves a CML-style log as an image from pre-processed daily summary data."""
     
@@ -843,6 +906,7 @@ def main():
     
     save_all_member_logs()
     save_top10()
+    generate_24hr_update_log(individual_log_df, generated_str, last_updated_str)
     
     print("--- 3. Generating Visuals and Reports ---")
     create_all_visuals(
