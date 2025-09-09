@@ -116,19 +116,22 @@ def process_cc_earnings(enriched_df, market_data_dfs, run_timestamp):
         external_shareholders = all_shareholders[all_shareholders['investor_discord_id'] != discord_id]
 
         if not external_shareholders.empty:
-            # 3. Find the single largest external shareholder for the Tier 1 dividend
-            largest_shareholder = external_shareholders.loc[external_shareholders['shares_owned'].idxmax()]
-            sponsor_discord_id = str(largest_shareholder['investor_discord_id'])
+            # 3. Find all shareholders tied for the maximum number of shares
+            max_shares = external_shareholders['shares_owned'].max()
+            top_shareholders = external_shareholders[external_shareholders['shares_owned'] == max_shares]
 
-            # 4. Pay the Tier 1 (Sponsorship) Dividend
-            sponsorship_dividend = 0.20 * total_personal_cc_earned
-            if sponsorship_dividend > 0:
-                # Use a tuple to store (amount, source_name, dividend_type)
-                payout_info = (sponsorship_dividend, inGameName, 'Tier 1 Div')
-                dividend_payouts[sponsor_discord_id] = dividend_payouts.get(sponsor_discord_id, []) + [payout_info]
+            # 4. Pay the Tier 1 (Sponsorship) Dividend, splitting it among the top shareholders
+            sponsorship_dividend_pool = 0.20 * total_personal_cc_earned
+            if sponsorship_dividend_pool > 0 and not top_shareholders.empty:
+                dividend_per_sponsor = sponsorship_dividend_pool / len(top_shareholders)
+                for _, sponsor in top_shareholders.iterrows():
+                    sponsor_discord_id = str(sponsor['investor_discord_id'])
+                    payout_info = (dividend_per_sponsor, inGameName, 'Tier 1 Div')
+                    dividend_payouts[sponsor_discord_id] = dividend_payouts.get(sponsor_discord_id, []) + [payout_info]
 
             # 5. Identify all OTHER external shareholders for Tier 2 dividends
-            tier_2_recipients = external_shareholders[external_shareholders['investor_discord_id'] != sponsor_discord_id]
+            top_sponsor_ids = top_shareholders['investor_discord_id'].astype(str).tolist()
+            tier_2_recipients = external_shareholders[~external_shareholders['investor_discord_id'].astype(str).isin(top_sponsor_ids)]
             
             if not tier_2_recipients.empty:
                 proportional_dividend_pool = 0.10 * total_personal_cc_earned
