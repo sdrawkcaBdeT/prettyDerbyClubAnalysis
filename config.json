@@ -3,5 +3,5 @@
     "ADMIN_DISCORD_IDS": [
         "147225844555710464"        
   ],
-    "ALLOW_MANUAL_REFRESH": false
+    "ALLOW_MANUAL_REFRESH": true
 }
