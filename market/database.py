@@ -633,6 +633,72 @@ def get_market_snapshot():
     return market_df, volume_24h or 0
 
 
+def get_trending_stocks(days: int = 3):
+    """
+    Fetches all active stocks and calculates their price change over a given period.
+    Returns a pandas DataFrame sorted by percentage change (descending).
+    """
+    conn = get_connection()
+    if not conn: return pd.DataFrame()
+
+    # This query uses Common Table Expressions (CTEs) for clarity and performance.
+    # It first finds the most recent price for each stock from before the specified `days` interval.
+    # Then, it joins this historical price with the current price to prepare for the calculation.
+    query = """
+    WITH PriceHistoryPast AS (
+        -- For each stock, find the most recent price from more than X days ago.
+        -- The window function FIRST_VALUE is used to efficiently get the latest price within the partition.
+        SELECT
+            ingamename,
+            FIRST_VALUE(price) OVER (PARTITION BY ingamename ORDER BY timestamp DESC) as price_past
+        FROM stock_price_history
+        WHERE timestamp < NOW() - INTERVAL %(days)s
+    ),
+    LatestPriceHistory AS (
+        -- This ensures we only have one historical price per stock, avoiding duplicate rows.
+        SELECT DISTINCT ingamename, price_past FROM PriceHistoryPast
+    )
+    -- The final query joins the current prices of active stocks with their historical prices.
+    SELECT
+        s.ingamename,
+        s.ticker,
+        s.current_price,
+        -- If a stock has no history before the interval (e.g., it's new),
+        -- we use its current price as the past price to show a 0% change.
+        COALESCE(lph.price_past, s.current_price) AS price_past
+    FROM stock_prices s
+    LEFT JOIN LatestPriceHistory lph ON s.ingamename = lph.ingamename
+    WHERE s.status = 'active';
+    """
+
+    df = pd.DataFrame()
+    try:
+        # The query is executed with parameters to prevent SQL injection.
+        df = pd.read_sql(query, conn, params={'days': f'{days} days'})
+
+        if not df.empty:
+            # The percentage change calculation is done in pandas for safety and flexibility.
+            # This avoids potential division-by-zero errors in SQL.
+            df['price_change'] = df['current_price'] - df['price_past']
+
+            # We replace a zero past price with NaN before division to prevent errors.
+            past_prices = df['price_past'].replace(0, pd.NA)
+            df['percent_change'] = (df['price_change'] / past_prices) * 100
+
+            # Sort by the calculated percentage change and fill any NaN/inf values with 0.
+            df.sort_values('percent_change', ascending=False, inplace=True)
+            df.replace([pd.NA, float('inf'), float('-inf')], 0, inplace=True)
+            df.fillna({'percent_change': 0}, inplace=True)
+
+    except (Exception, psycopg2.Error) as error:
+        logging.error(f"Error fetching trending stocks: {error}")
+    finally:
+        if conn is not None:
+            conn.close()
+
+    return df
+
+
 def get_stock_details(identifier: str):
     """
     Fetches all detailed information for a single stock in one efficient query.
@@ -933,6 +999,72 @@ def execute_trade_transaction(
             conn.rollback()
             return None
     conn.close()
+
+def execute_gift_transaction(sender_id: str, sender_name: str, receiver_id: str, receiver_name: str, amount: float) -> float | None:
+    """
+    Atomically transfers CC from a sender to a receiver and logs the transaction for both parties.
+    Returns the sender's new balance on success, None on failure.
+    """
+    conn = get_connection()
+    if not conn:
+        return None
+
+    with conn.cursor() as cursor:
+        try:
+            # 1. Lock both wallets to prevent race conditions and verify funds
+            cursor.execute("SELECT balance FROM balances WHERE discord_id = %s FOR UPDATE;", (sender_id,))
+            sender_wallet = cursor.fetchone()
+            if not sender_wallet or sender_wallet[0] < amount:
+                conn.rollback()
+                return None  # Insufficient funds
+
+            # Lock the receiver's wallet as well
+            cursor.execute("SELECT balance FROM balances WHERE discord_id = %s FOR UPDATE;", (receiver_id,))
+
+            # 2. Debit the sender
+            cursor.execute(
+                "UPDATE balances SET balance = balance - %s WHERE discord_id = %s RETURNING balance;",
+                (amount, sender_id)
+            )
+            new_sender_balance = cursor.fetchone()[0]
+
+            # 3. Credit the receiver
+            cursor.execute(
+                "UPDATE balances SET balance = balance + %s WHERE discord_id = %s RETURNING balance;",
+                (amount, receiver_id)
+            )
+            new_receiver_balance = cursor.fetchone()[0]
+
+            # 4. Log the transaction for the SENDER
+            sender_log_details = json.dumps({"receiver": receiver_name})
+            cursor.execute(
+                """
+                INSERT INTO transactions (actor_id, transaction_type, item_name, cc_amount, details, balance_after)
+                VALUES (%s, 'GIFT_SENT', %s, %s, %s, %s);
+                """,
+                (sender_id, f"Gift to {receiver_name}", -amount, sender_log_details, new_sender_balance)
+            )
+
+            # 5. Log the transaction for the RECEIVER
+            receiver_log_details = json.dumps({"sender": sender_name})
+            cursor.execute(
+                """
+                INSERT INTO transactions (actor_id, transaction_type, item_name, cc_amount, details, balance_after)
+                VALUES (%s, 'GIFT_RECEIVED', %s, %s, %s, %s);
+                """,
+                (receiver_id, f"Gift from {sender_name}", amount, receiver_log_details, new_receiver_balance)
+            )
+
+            conn.commit()
+            return new_sender_balance
+
+        except Exception as e:
+            logging.error(f"Gift transaction failed: {e}")
+            conn.rollback()
+            return None
+        finally:
+            if conn:
+                conn.close()
 
 def get_trades_without_details():
     """
