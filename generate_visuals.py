@@ -463,10 +463,10 @@ def generate_24hr_update_log(individual_log_df, generated_str, last_updated_str)
         individual_log_df['timestamp'] = pd.to_datetime(individual_log_df['timestamp'])
 
     last_update_time = individual_log_df['timestamp'].max()
-    twenty_four_hours_ago = last_update_time - pd.Timedelta(hours=24)
+    six_hours_ago = last_update_time - pd.Timedelta(hours=6)
 
     recent_gains_df = individual_log_df[
-        (individual_log_df['timestamp'] >= twenty_four_hours_ago) &
+        (individual_log_df['timestamp'] >= six_hours_ago) &
         (individual_log_df['fanGain'] != 0)
     ].copy()
 
