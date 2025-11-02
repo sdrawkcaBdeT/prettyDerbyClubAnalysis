@@ -16,42 +16,52 @@ pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tessera
 screenshots_folder = os.path.join("dataGet","data","rawScreenShots")
 cropped_screenshots_folder = os.path.join("dataGet","data","croppedFanCounts")
 templates_dir = "dataGet/imgToFind/clubMembers"
+# do_harmless_clicks = True  # Set to True to perform harmless clicks before starting
+do_harmless_clicks = False
 
 
 # list of members in order they appear in the club info page, used to load club member images and find their coordinates
 clubMembers = [
     "CashBaggins",
     # "Top",
+    "Epidemic",
     "WaveofGratitude",
-    "GhostlyInsomnia",
+    # "GhostlyInsomnia",
     "Kino",
     "Claimses",
     "d",
     "Yuto",
     "Dill Dough",
-    "Pygums",
+    # "Pygums",
     "Eunoia",
-    "Ray",
-    "Epidemic",
+    # "Ray",
     "Gearras",
     "SmillBisser",
     # "StarLight",
     # "cinciol",
     "Iyy",
-    "Walzy",
+    # "Walzy",
     "Keyevin",
     "gumgum",
-    "Twice",
+    # "Twice",
     "Ermereas",
     "Maslow",
     "Trainer#3487",
     "Wither",
     "AO",
-    "s",
-    "Kurumi",
+    # "s",
+    # "Kurumi",
     "Kei",
     "Nice",
     "g",
+    "Sapph",
+    "mmmmmm",
+    "Fizzle",
+    "XV11",
+    "cash",
+    "Kuruel",
+    "Applejack",
+    "Bloo"
 ]
 clubMemberTemplateImageFileNames = [os.path.join(templates_dir, f"clubMember{name}.png") for name in clubMembers]
 
@@ -107,27 +117,39 @@ def extract_data_from_png(image_path):
 # 1. Navigate to the Club Member Screen
 print("--- 1. Navigating to Club Member Screen ---")
 # In case we're in a weird state (day restart), do a 12x harmless click first
-# harmlessClick()
-# harmlessClick()
-# harmlessClick()
-# harmlessClick()
-# harmlessClick()
-# harmlessClick()
-# harmlessClick()
-# harmlessClick()
-# harmlessClick()
-# harmlessClick()
-# ##############
-# harmlessClick()
-# harmlessClick()
-# harmlessClick()
-# harmlessClick()
-# harmlessClick()
-# harmlessClick()
-# harmlessClick()
-# harmlessClick()
-# harmlessClick()
-# harmlessClick()
+if do_harmless_clicks == True:
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    ##############
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    ##############
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
+    harmlessClick()
 
 clickClub()
 clickClubMenu()

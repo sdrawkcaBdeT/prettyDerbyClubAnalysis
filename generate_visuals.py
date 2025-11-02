@@ -11,6 +11,8 @@ import io
 import discord
 
 OUTPUT_DIR = 'Club_Report_Output'
+ENRICHED_FAN_LOG_CSV = 'enriched_fan_log.csv'
+CENTRAL_TZ = pytz.timezone('US/Central')
 
 # --- Matplotlib Configuration (Consistent Dark Theme) ---
 # This single block now defines the consistent dark theme for ALL charts.
@@ -47,7 +49,16 @@ plt.rcParams['figure.dpi'] = 150
 def add_timestamps_to_fig(fig, generated_str):
     """Adds standardized timestamp footers to a matplotlib figure."""
     fig.text(0.92, 0.01, f"GENERATED: {generated_str}", color='white', fontsize=8, va='bottom', ha='right')
-    
+
+
+def load_enriched_fan_log() -> pd.DataFrame:
+    df = pd.read_csv(ENRICHED_FAN_LOG_CSV)
+    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
+    df.dropna(subset=['timestamp'], inplace=True)
+    df['timestamp'] = df['timestamp'].dt.tz_convert(CENTRAL_TZ)
+    df['date'] = df['timestamp'].dt.date
+    return df
+
 def get_club_month_window(run_time_ct):
     """Calculates the start and end of the current in-game ranking period."""
     start_date = run_time_ct.replace(day=1, hour=10, minute=0, second=0, microsecond=0)
@@ -64,20 +75,16 @@ def get_club_month_window(run_time_ct):
         else:
             start_date = start_date.replace(month=start_date.month - 1, hour=10, minute=0, second=0)
 
-    first_month_start = pytz.timezone('US/Central').localize(datetime(2025, 8, 8, 23, 45, 0))
+    first_month_start = CENTRAL_TZ.localize(datetime(2025, 8, 8, 23, 45, 0))
     if start_date.month == 8 and start_date.year == 2025:
         start_date = first_month_start
 
     return start_date, end_date
 
 def get_report_updated_generated_rankwindow_timestamps():
-    individual_log_df = pd.read_csv('enriched_fan_log.csv')
-    individual_log_df['timestamp'] = pd.to_datetime(individual_log_df['timestamp'])
-    # --- FIX: Create the 'date' column for merging ---
-    individual_log_df['date'] = individual_log_df['timestamp'].dt.date
+    individual_log_df = load_enriched_fan_log()
 
-    central_tz = pytz.timezone('US/Central')
-    generation_ct = datetime.now(central_tz)
+    generation_ct = datetime.now(CENTRAL_TZ)
     start_date, end_date = get_club_month_window(generation_ct)
     last_updated_ct = individual_log_df['timestamp'].max()
     last_updated_str = last_updated_ct.strftime('%Y-%m-%d %I:%M %p %Z')
@@ -500,8 +507,9 @@ def generate_contribution_chart(contribution_df, last_updated_str, generated_str
     plt.title(f'Monthly Fan Contribution by Rank Group | Updated: {last_updated_str}', fontsize=24, weight='bold', loc='left', y=1.075)
     ax.legend(title='', bbox_to_anchor=(0.5, 1.075), loc='upper center', ncol=len(percentages), fontsize=16)
 
-    time_elapsed = (datetime.now(pytz.timezone('US/Central')) - start_date).total_seconds() / 3600
-    time_remaining = (end_date - datetime.now(pytz.timezone('US/Central'))).total_seconds() / 3600
+    now_ct = datetime.now(CENTRAL_TZ)
+    time_elapsed = (now_ct - start_date).total_seconds() / 3600
+    time_remaining = (end_date - now_ct).total_seconds() / 3600
 
     plt.tight_layout(rect=[0, 0.05, 0.95, 0.95])
     add_timestamps_to_fig(fig, generated_str)
@@ -670,13 +678,10 @@ def generate_log_image(member_data_df, title, filename, generated_str, limit = 3
     plt.close(fig)
 
 def save_all_member_logs():
-    individual_log_df = pd.read_csv('enriched_fan_log.csv')
-    
+    individual_log_df = load_enriched_fan_log()
+
     last_updated_str, generated_str, start_date, end_date = get_report_updated_generated_rankwindow_timestamps()
-    
-    individual_log_df['timestamp'] = pd.to_datetime(individual_log_df['timestamp'])
-    individual_log_df['date'] = individual_log_df['timestamp'].dt.date
-    
+
     log_data_limited = individual_log_df[
         (individual_log_df['timestamp'] >= start_date) & 
         (individual_log_df['timestamp'] <= end_date)
@@ -730,13 +735,10 @@ def save_all_member_logs():
             print(f"  - Saved log for {safe_member_name}.")
     
 def save_top10():
-    individual_log_df = pd.read_csv('enriched_fan_log.csv')
-    
+    individual_log_df = load_enriched_fan_log()
+
     last_updated_str, generated_str, start_date, end_date = get_report_updated_generated_rankwindow_timestamps()
-    
-    individual_log_df['timestamp'] = pd.to_datetime(individual_log_df['timestamp'])
-    individual_log_df['date'] = individual_log_df['timestamp'].dt.date
-    
+
     log_data_limited = individual_log_df[
         (individual_log_df['timestamp'] >= start_date) & 
         (individual_log_df['timestamp'] <= end_date)
@@ -760,7 +762,8 @@ def save_top10():
     # --- MODIFIED TITLE AND NEW ANNOTATIONS ---
     plt.title(f'Top 10 Members by Monthly Fan Gain | Updated: {last_updated_str}', fontsize=15, weight='bold', loc='left')
 
-    time_elapsed = (datetime.now(pytz.timezone('US/Central')) - start_date).total_seconds() / 3600
+    now_ct = datetime.now(CENTRAL_TZ)
+    time_elapsed = (now_ct - start_date).total_seconds() / 3600
     total_duration = (end_date - start_date).total_seconds() / 3600
     time_remaining = total_duration - time_elapsed
 
@@ -863,7 +866,117 @@ def create_all_visuals(members_df, summary_df, individual_log_df, club_log_df, c
 
     print(f"  - Saved {output_gain_file}")
     print(f"  - Saved {output_summary_file}")
+    
+def generate_competition_chart(last_updated_str, generated_str):
+    """
+    Generates a horizontal bar chart of the final fan gain for the 1-week competition,
+    styled like the top10 chart.
+    
+    Returns:
+        bool: True on success, False on failure.
+    """
+    print("  - Generating fan_competition_chart.png (Top10 Styled)")
+    
+    # --- 1. Define Competition Window ---
+    try:
+        competition_start_dt = CENTRAL_TZ.localize(datetime(2025, 10, 17, 18, 55, 0))
+        competition_end_dt = CENTRAL_TZ.localize(datetime(2025, 10, 24, 18, 55, 0))
+    except Exception as e:
+        print(f"Error localizing dates: {e}")
+        return False
 
+    # --- 2. Load Data ---
+    try:
+        df = load_enriched_fan_log()
+    except FileNotFoundError:
+        print(f"Error: {ENRICHED_FAN_LOG_CSV} not found.")
+        return False
+
+    if df.empty:
+        print("Error: The fan log is empty.")
+        return False
+
+    # --- 3. Find Baselines ---
+    df_before = df[df['timestamp'] <= competition_start_dt].copy()
+    if df_before.empty:
+        print(f"Error: No data found at or before the start time: {competition_start_dt}")
+        return False
+        
+    baseline_idx = df_before.groupby('inGameName')['timestamp'].idxmax()
+    baselines = df_before.loc[baseline_idx].set_index('inGameName')['fanCount']
+
+    # --- 4. Get "Now" Data ---
+    df_comp_period = df[
+        (df['timestamp'] > competition_start_dt) &
+        (df['timestamp'] <= competition_end_dt)
+    ].copy()
+
+    if df_comp_period.empty:
+        print("Error: No competition data found during the competition period.")
+        return False
+
+    latest_idx = df_comp_period.groupby('inGameName')['timestamp'].idxmax()
+    df_now = df_comp_period.loc[latest_idx].copy()
+
+    # --- 5. Calculate Final Fan Gain ---
+    df_now['baseline_fans'] = df_now['inGameName'].map(baselines)
+    df_now.dropna(subset=['baseline_fans'], inplace=True) 
+
+    if df_now.empty:
+        print("Error: No members from the competition data had a pre-competition baseline.")
+        return False
+        
+    df_now['fan_gain'] = df_now['fanCount'] - df_now['baseline_fans']
+    
+    # Prepare for plotting - sort and filter out non-participants
+    df_plot = df_now[df_now['fan_gain'] > 0].sort_values('fan_gain', ascending=False)
+
+    if df_plot.empty:
+        print("Error: No members had positive fan gain in the competition.")
+        return False
+
+    # --- 6. Plot the data (Top10 Style) ---
+    fig, ax = plt.subplots(figsize=(12, 10)) # Adjusted for all members
+    
+    sns.barplot(
+        ax=ax,
+        x='fan_gain',
+        y='inGameName',
+        data=df_plot,
+        palette='dark:#2E7D32', # Using same palette as top10
+        hue='inGameName',
+        dodge=False
+    )
+    plt.legend([],[], frameon=False) # Remove legend just like top10
+
+    # Format X-axis to use "K" just like top10
+    ax.xaxis.set_major_formatter(lambda x, pos: f'{int(x/1000):,}K')
+
+    # Add bar labels just like top10
+    for container in ax.containers:
+        labels = [f'{int(v/1000):,}K' for v in container.datavalues]
+        # Using white text for labels as it's on a dark background, not a green bar
+        ax.bar_label(container, labels=labels, padding=5, fontsize=10, color='white')
+
+    # --- 7. Format the chart ---
+    plt.title(f'Fan Gain Competition Results (10/17 - 10/24) | Updated: {last_updated_str}', fontsize=15, weight='bold', loc='left')
+    
+    plt.xlabel('Total Fans Gained', fontsize=12)
+    plt.ylabel('Member', fontsize=14)
+    if not df_plot.empty:
+        ax.set_xlim(right=df_plot['fan_gain'].max() * 1.15) 
+    
+    plt.tight_layout(rect=[0, 0.03, 0.975, 0.95]) 
+    
+    # Add timestamp footer just like top10
+    add_timestamps_to_fig(fig, generated_str)
+
+    # --- 8. Save plot to file ---
+    output_path = os.path.join(OUTPUT_DIR, 'fan_competition_chart.png')
+    fig.savefig(output_path, format='png', facecolor=ax.get_facecolor())
+    plt.close(fig)
+    print(f"  - Saved {output_path}")
+    return True
 
 def main():
     """
@@ -874,10 +987,7 @@ def main():
     try:
         members_df = pd.read_csv('members.csv')
         ranks_df = pd.read_csv('ranks.csv')
-        individual_log_df = pd.read_csv('enriched_fan_log.csv')
-        individual_log_df['timestamp'] = pd.to_datetime(individual_log_df['timestamp'])
-        # --- FIX: Create the 'date' column for merging ---
-        individual_log_df['date'] = individual_log_df['timestamp'].dt.date
+        individual_log_df = load_enriched_fan_log()
 
         print("  - Successfully loaded enriched fan log and supporting files.")
     except FileNotFoundError as e:
@@ -885,8 +995,7 @@ def main():
         return
 
     print("--- 2. Aggregating Data for Reports ---")
-    central_tz = pytz.timezone('US/Central')
-    generation_ct = datetime.now(central_tz)
+    generation_ct = datetime.now(CENTRAL_TZ)
     start_date, end_date = get_club_month_window(generation_ct)
     last_updated_ct = individual_log_df['timestamp'].max()
     last_updated_str = last_updated_ct.strftime('%Y-%m-%d %I:%M %p %Z')
@@ -904,7 +1013,6 @@ def main():
     ]
     daily_summary_df = pd.merge(daily_summary_df, prestige_info, on=['inGameName', 'date'])
 
-    daily_summary_df['timestamp'] = pd.to_datetime(daily_summary_df['timestamp']) # Ensure datetime type
     daily_summary_df = daily_summary_df.sort_values(by=['inGameName', 'date'])
     daily_summary_df['monthlyFanGain'] = daily_summary_df.groupby('inGameName')['dailyFanGain'].cumsum()
     daily_summary_df['rank'] = daily_summary_df.groupby('date')['monthlyFanGain'].rank(method='dense', ascending=False)
@@ -962,6 +1070,7 @@ def main():
     
     save_all_member_logs()
     save_top10()
+    generate_competition_chart(last_updated_str, generated_str)
     generate_24hr_update_log(individual_log_df, generated_str, last_updated_str)
     
     print("--- 3. Generating Visuals and Reports ---")

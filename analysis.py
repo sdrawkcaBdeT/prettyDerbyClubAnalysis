@@ -110,7 +110,12 @@ def main():
     fanlog_df.dropna(subset=['fanCount', 'timestamp'], inplace=True)
 
     central_tz = pytz.timezone('US/Central')
-    fanlog_df['timestamp'] = fanlog_df['timestamp'].dt.tz_localize(central_tz)
+    fanlog_df['timestamp'] = fanlog_df['timestamp'].dt.tz_localize(
+        central_tz,
+        ambiguous='NaT',
+        nonexistent='shift_forward'
+    )
+    fanlog_df.dropna(subset=['timestamp'], inplace=True)
 
     print(f"Found {len(fanlog_df)} valid log entries after cleaning.")
 

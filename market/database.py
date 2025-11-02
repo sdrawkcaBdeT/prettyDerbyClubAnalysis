@@ -16,6 +16,11 @@ PG_USER = os.getenv("DB_USER")
 PG_PASSWORD = os.getenv("DB_PASSWORD")
 PG_DATABASE = os.getenv("DB_NAME")
 
+DERBY_SCHEMA = "derby"
+MARKET_RACES_TABLE = f"{DERBY_SCHEMA}.market_races"
+MARKET_RACE_HORSES_TABLE = f"{DERBY_SCHEMA}.market_race_horses"
+MARKET_BETS_TABLE = f"{DERBY_SCHEMA}.market_bets"
+
 logging.basicConfig(level=logging.INFO)
 
 def get_connection():
@@ -42,28 +47,26 @@ def initialize_database():
     with conn.cursor() as cursor:
         try:
             # Note: We use DECIMAL for currency to avoid floating point errors.
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS crew_coin_wallets (
-                    discord_id TEXT PRIMARY KEY,
-                    balance DECIMAL(12, 2) NOT NULL DEFAULT 10000.00
-                );
-                CREATE TABLE IF NOT EXISTS races (
+            cursor.execute(f"""
+                CREATE SCHEMA IF NOT EXISTS {DERBY_SCHEMA};
+
+                CREATE TABLE IF NOT EXISTS {MARKET_RACES_TABLE} (
                     race_id BIGINT PRIMARY KEY,
                     distance INT NOT NULL,
                     status TEXT NOT NULL,
                     winner_name TEXT,
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC')
                 );
-                CREATE TABLE IF NOT EXISTS race_horses (
+                CREATE TABLE IF NOT EXISTS {MARKET_RACE_HORSES_TABLE} (
                     horse_id SERIAL PRIMARY KEY,
-                    race_id BIGINT REFERENCES races(race_id),
+                    race_id BIGINT REFERENCES {MARKET_RACES_TABLE}(race_id) ON DELETE CASCADE,
                     horse_name TEXT NOT NULL,
                     strategy TEXT NOT NULL,
                     stats_json JSONB NOT NULL
                 );
-                CREATE TABLE IF NOT EXISTS bets (
+                CREATE TABLE IF NOT EXISTS {MARKET_BETS_TABLE} (
                     bet_id SERIAL PRIMARY KEY,
-                    race_id BIGINT REFERENCES races(race_id),
+                    race_id BIGINT REFERENCES {MARKET_RACES_TABLE}(race_id) ON DELETE CASCADE,
                     bettor_id TEXT NOT NULL,
                     horse_name TEXT NOT NULL,
                     amount DECIMAL(10, 2) NOT NULL,
@@ -2218,7 +2221,7 @@ def create_race(race_id, distance, horses):
         try:
             # Insert the main race record
             cursor.execute(
-                "INSERT INTO races (race_id, distance, status) VALUES (%s, %s, %s);",
+                f"INSERT INTO {MARKET_RACES_TABLE} (race_id, distance, status) VALUES (%s, %s, %s);",
                 (race_id, distance, 'betting')
             )
             # Insert all the horse records
@@ -2227,7 +2230,7 @@ def create_race(race_id, distance, horses):
             ]
             extras.execute_values(
                 cursor,
-                "INSERT INTO race_horses (race_id, horse_name, strategy, stats_json) VALUES %s;",
+                f"INSERT INTO {MARKET_RACE_HORSES_TABLE} (race_id, horse_name, strategy, stats_json) VALUES %s;",
                 horse_data
             )
             conn.commit()
@@ -2252,7 +2255,7 @@ def place_bet_transaction(race_id, bettor_id, horse_name, amount, odds) -> bool:
             # 1. Check and debit wallet balance
             # The FOR UPDATE locks the row to prevent race conditions.
             cursor.execute(
-                "SELECT balance FROM crew_coin_wallets WHERE discord_id = %s FOR UPDATE;",
+                "SELECT balance FROM balances WHERE discord_id = %s FOR UPDATE;",
                 (bettor_id,)
             )
             wallet = cursor.fetchone()
@@ -2262,14 +2265,14 @@ def place_bet_transaction(race_id, bettor_id, horse_name, amount, odds) -> bool:
                 return False
             
             cursor.execute(
-                "UPDATE crew_coin_wallets SET balance = balance - %s WHERE discord_id = %s;",
+                "UPDATE balances SET balance = balance - %s WHERE discord_id = %s;",
                 (amount, bettor_id)
             )
 
             # 2. Insert the bet record
             cursor.execute(
-                """INSERT INTO bets (race_id, bettor_id, horse_name, amount, locked_in_odds)
-                   VALUES (%s, %s, %s, %s, %s);""",
+                f"""INSERT INTO {MARKET_BETS_TABLE} (race_id, bettor_id, horse_name, amount, locked_in_odds)
+                    VALUES (%s, %s, %s, %s, %s);""",
                 (race_id, bettor_id, horse_name, amount, odds)
             )
             
@@ -2282,6 +2285,28 @@ def place_bet_transaction(race_id, bettor_id, horse_name, amount, odds) -> bool:
             conn.rollback()
             return False
     conn.close()
+
+def update_race_status(race_id: int, status: str) -> bool:
+    """
+    Updates the status column for a market race record.
+    """
+    conn = get_connection()
+    if not conn:
+        return False
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"UPDATE {MARKET_RACES_TABLE} SET status = %s WHERE race_id = %s;",
+                (status, race_id),
+            )
+        conn.commit()
+        return True
+    except psycopg2.Error as e:
+        logging.error(f"Error updating market race status for #{race_id}: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
 
 # We can add more functions here later as needed (e.g., for payouts, creating races, etc.)
 

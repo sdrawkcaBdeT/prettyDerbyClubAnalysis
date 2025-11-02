@@ -2878,6 +2878,18 @@ async def add_house_funds_error(ctx, error):
     else:
         await ctx.send(f"An error occurred: {error}", ephemeral=True)
 
+@bot.command(name="fan_comp_chart")
+async def fan_comp_chart(ctx):
+    """Posts the fan_competition_chart.png chart."""
+    
+    file_path = os.path.join(OUTPUT_DIR, 'fan_competition_chart.png')
+    
+    if os.path.exists(file_path):
+        # Send the file
+        await ctx.send(file=discord.File(file_path, "fan_competition_chart.png"))
+    else:
+        await ctx.send("Sorry, I couldn't find the competition chart. It may not have been generated yet. Please try again after the next data refresh.")
+
 # --- Run the Bot ---
 load_dotenv() # Loads variables from .env file
 TOKEN = os.getenv('DISCORD_TOKEN')
